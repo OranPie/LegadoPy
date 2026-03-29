@@ -1,0 +1,94 @@
+--- JsLib ---
+var host = [
+    'http://219.154.201.122:5006',
+    'https://api.langge.cf',
+    'https://v2.czyl.cf',
+    'https://20.langge.tk',
+    'https://v4.czyl.cf',   
+    'https://v5.czyl.cf',
+    'https://v7.czyl.cf',
+    'https://v8.czyl.cf',
+    'https://v9.czyl.cf',
+    'https://v10.czyl.cf'
+];
+
+function getArguments(open_argument, key) {
+    try {
+        open_argument = JSON.parse(open_argument);
+    } catch (e) {
+        open_argument = {
+            media: "小说",
+            tone_id: "默认音色",
+            server: host[0],
+            source: "全部",
+            source_type: "男频",
+        };
+    }
+    if (key) {
+        return open_argument[key];
+    } else {
+        return open_argument;
+    }
+}
+
+function setArguments(key, value) {
+    const {
+        source
+    } = this;
+    let open_argument = source.getVariable();
+    open_argument = getArguments(open_argument, '');
+    open_argument[key] = value;
+    open_argument = JSON.stringify(open_argument);
+    source.setVariable(open_argument);
+
+...
+es) {
+    return html.replace(
+        /<p>(.*?)(?:<comment ident="([^"]*)" count="([^"]*)" \/>)?<\/p>/g,
+        function(match, text, url, count) {
+            if (url && count) {
+                const encodedUrl = url.replace(/&/g, '&amp;');
+                return `<div rs-native>${text}<comment count="${count}" onPress="java.showReadingBrowser('${encodedUrl}','${sources}段评')"></div>`;
+            } else {
+                return `<div rs-native>${text}</div>`;
+            }
+        }
+    );
+}
+
+--- Search URL ---
+<js>
+let base_url = getArguments(source.getVariable(), 'server');
+let media;
+let sources = getArguments(source.getVariable(), 'source');
+let disabled_sources = getArguments(source.getVariable(), 'disabled_sources');
+if (String(key).startsWith("m:") || String(key).startsWith("m：")) {
+    media = "漫画"
+    key = key.slice(2)
+} else if (String(key).startsWith("t:") || String(key).startsWith("t：")) {
+    media = "听书"
+    key = key.slice(2)
+} else if (String(key).startsWith("d:") || String(key).startsWith("d：")) {
+    media = "短剧"
+    key = key.slice(2)
+} else if (String(key).startsWith("x:") || String(key).startsWith("x：")) {
+    media = "小说"
+    key = key.slice(2)
+} else {
+    media = getArguments(source.getVariable(), 'media');
+}
+if (key.includes('@')) {
+    var parts = key.split('@');
+    key = parts[0];
+    sources = parts[1] || sources;
+}
+let qtcookie = cookie.getCookie(base_url);
+let op = {
+    method: "GET",
+    headers: {
+        cookie: qtcookie
+    },
+};
+op = JSON.stringify(op);
+`${base_url}/search?title=${key}&tab=${media}&source=${sources}&page={{page}}&disabled_sources=${disabled_sources},${op}`
+</js>
