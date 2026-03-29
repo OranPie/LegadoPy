@@ -754,8 +754,7 @@ class SourceUiScreen(StructuredFormScreen):
         if not confirmed:
             return
         self._source.removeLoginHeader()
-        if self.app.source and self.app.source.bookSourceUrl == self._source.bookSourceUrl:
-            self.app.set_source(self._source, persist=True, notify=False)
+        self.app.set_source(self._source, persist=True, notify=False)
         self._apply_action_result(
             SourceUiActionResult(
                 message="已清空登录请求头。",
@@ -775,12 +774,12 @@ class SourceUiScreen(StructuredFormScreen):
 
     def submit_form(self, form_data: dict[str, str]) -> SourceUiActionResult:
         outcome = submit_source_form_detailed(self._source, form_data)
-        self.app.reader_state.set_current_source(self._source)
+        self.app.set_source(self._source, persist=True, notify=False)
         return outcome
 
     def run_row_action(self, action: str, form_data: dict[str, str]) -> SourceUiActionResult:
         outcome = execute_source_ui_action(self._source, action, form_data)
-        self.app.reader_state.set_current_source(self._source)
+        self.app.set_source(self._source, persist=True, notify=False)
         return outcome
 
 

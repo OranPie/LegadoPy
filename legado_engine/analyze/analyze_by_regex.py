@@ -6,7 +6,14 @@ concatenation of all matches from the previous step.
 """
 from __future__ import annotations
 import re
+from functools import lru_cache
 from typing import List, Optional
+
+
+@lru_cache(maxsize=512)
+def _compile(pattern: str) -> re.Pattern:
+    """Compile and cache regex patterns to avoid repeated re.compile() calls."""
+    return re.compile(pattern, re.DOTALL)
 
 
 class AnalyzeByRegex:
@@ -19,7 +26,7 @@ class AnalyzeByRegex:
         of the first match of the last pattern.
         """
         try:
-            pattern = re.compile(regs[index], re.DOTALL)
+            pattern = _compile(regs[index])
         except re.error:
             return None
 
@@ -45,7 +52,7 @@ class AnalyzeByRegex:
         Each inner list contains [full_match, group1, group2, ...].
         """
         try:
-            pattern = re.compile(regs[index], re.DOTALL)
+            pattern = _compile(regs[index])
         except re.error:
             return []
 

@@ -5,6 +5,7 @@ Uses jsonpath-ng as the JSONPath engine.
 """
 from __future__ import annotations
 import json
+from functools import lru_cache
 from typing import Any, List, Optional
 
 from jsonpath_ng import parse as _jparse
@@ -13,10 +14,20 @@ from jsonpath_ng.exceptions import JsonPathParserError
 from .rule_analyzer import RuleAnalyzer
 
 
+@lru_cache(maxsize=512)
+def _compile_jsonpath(rule: str):
+    try:
+        return _jparse(rule)
+    except (JsonPathParserError, Exception):
+        return None
+
+
 def _jp_read(ctx: Any, rule: str) -> Any:
     """Execute a JSONPath expression on an already-parsed object."""
     try:
-        expr = _jparse(rule)
+        expr = _compile_jsonpath(rule)
+        if expr is None:
+            return None
         matches = expr.find(ctx)
         if not matches:
             return None

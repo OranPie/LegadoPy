@@ -9,6 +9,7 @@ import re
 import traceback
 from typing import Any, List
 
+from .engine import resolve_engine
 from .analyze_url import JsCookie
 from .js_engine import JsExtensions, eval_js
 from .models.book_source import BookSource, ExploreKind
@@ -31,7 +32,7 @@ def _parse_kind_item(item: Any) -> ExploreKind:
     return ExploreKind(title=str(item))
 
 
-def _evaluate_explore_rule(book_source: BookSource) -> str:
+def _evaluate_explore_rule(book_source: BookSource, engine=None) -> str:
     rule_str = book_source.exploreUrl or ""
     if not rule_str:
         return ""
@@ -44,10 +45,12 @@ def _evaluate_explore_rule(book_source: BookSource) -> str:
         end = rule_str.rfind("</js>")
         js_str = rule_str[4:end if end != -1 else None]
 
+    engine = resolve_engine(engine)
     java = JsExtensions(
         base_url=book_source.get_key(),
         put_fn=book_source.put,
         get_fn=book_source.get,
+        engine=engine,
     )
     result = eval_js(
         js_str,
@@ -55,20 +58,21 @@ def _evaluate_explore_rule(book_source: BookSource) -> str:
             "java": java,
             "source": book_source,
             "baseUrl": book_source.get_key(),
-            "cookie": JsCookie(),
+            "cookie": JsCookie(engine.cookie_store),
+            "engine": engine,
         },
         java_obj=java,
     )
     return "" if result is None else str(result).strip()
 
 
-def get_explore_kinds(book_source: BookSource) -> List[ExploreKind]:
+def get_explore_kinds(book_source: BookSource, engine=None) -> List[ExploreKind]:
     rule_str = book_source.exploreUrl or ""
     if not rule_str.strip():
         return []
 
     try:
-        resolved = _evaluate_explore_rule(book_source)
+        resolved = _evaluate_explore_rule(book_source, engine=engine)
         if not resolved:
             return []
         try:
@@ -90,8 +94,8 @@ def get_explore_kinds(book_source: BookSource) -> List[ExploreKind]:
         return [ExploreKind(title=f"ERROR:{exc}", url=traceback.format_exc())]
 
 
-def get_explore_kinds_json(book_source: BookSource) -> str:
+def get_explore_kinds_json(book_source: BookSource, engine=None) -> str:
     return json.dumps([
         {"title": kind.title, "url": kind.url, "style": kind.style}
-        for kind in get_explore_kinds(book_source)
+        for kind in get_explore_kinds(book_source, engine=engine)
     ], ensure_ascii=False)

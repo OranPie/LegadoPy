@@ -2,8 +2,10 @@
 BookChapterList – 1:1 port of BookChapterList.kt.
 """
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
+from ..engine import resolve_engine
 from ..analyze.analyze_rule import AnalyzeRule
 from ..analyze_url import AnalyzeUrl
 from ..models.book import BookChapter
@@ -20,11 +22,13 @@ def analyze_chapter_list(
     base_url: str,
     redirect_url: str,
     body: Optional[str],
+    engine=None,
 ) -> List[BookChapter]:
     """
     Mirrors BookChapterList.analyzeChapterList() (outer form).
     Handles multi-page TOC by following nextTocUrl.
     """
+    engine = resolve_engine(engine)
     if body is None:
         raise ValueError(f"Empty TOC body from {base_url}")
 
@@ -43,7 +47,7 @@ def analyze_chapter_list(
 
     # First page
     chapters, next_urls = _analyze_chapter_page(
-        book, base_url, redirect_url, body, toc_rule, list_rule, book_source
+        book, base_url, redirect_url, body, toc_rule, list_rule, book_source, engine=engine
     )
     chapter_list.extend(chapters)
 
@@ -56,11 +60,12 @@ def analyze_chapter_list(
                 m_url=next_url,
                 source=book_source,
                 rule_data=book,
+                engine=engine,
             )
             res = au.get_str_response()
             if res.body:
                 more_chapters, next_urls2 = _analyze_chapter_page(
-                    book, next_url, res.url, res.body, toc_rule, list_rule, book_source
+                    book, next_url, res.url, res.body, toc_rule, list_rule, book_source, engine=engine
                 )
                 chapter_list.extend(more_chapters)
                 next_url = next_urls2[0] if next_urls2 else ""
@@ -68,18 +73,28 @@ def analyze_chapter_list(
                 break
 
     elif len(next_urls) > 1:
-        # Concurrent multi-page fetch
-        for url_str in next_urls:
-            au = AnalyzeUrl(m_url=url_str, source=book_source, rule_data=book)
+        # Truly concurrent multi-page fetch
+        def _fetch_toc_page(url_str: str) -> List[BookChapter]:
+            au = AnalyzeUrl(m_url=url_str, source=book_source, rule_data=book, engine=engine)
             try:
                 res = au.get_str_response()
                 if res.body:
                     more, _ = _analyze_chapter_page(
-                        book, url_str, res.url, res.body, toc_rule, list_rule, book_source
+                        book, url_str, res.url, res.body, toc_rule, list_rule, book_source, engine=engine
                     )
-                    chapter_list.extend(more)
+                    return more
             except Exception:
                 pass
+            return []
+
+        workers = min(len(next_urls), 8)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="legado-toc") as pool:
+            futures = {pool.submit(_fetch_toc_page, u): u for u in next_urls}
+            for fut in as_completed(futures):
+                try:
+                    chapter_list.extend(fut.result())
+                except Exception:
+                    pass
 
     if not chapter_list:
         raise ValueError("Chapter list is empty")
@@ -119,9 +134,11 @@ def _analyze_chapter_page(
     toc_rule: "TocRule",
     list_rule: str,
     book_source: "BookSource",
+    engine=None,
 ) -> Tuple[List[BookChapter], List[str]]:
     """Single-page TOC parsing. Returns (chapters, next_urls)."""
-    analyze_rule = AnalyzeRule(book, book_source)
+    engine = resolve_engine(engine)
+    analyze_rule = AnalyzeRule(book, book_source, engine=engine)
     analyze_rule.set_content(body).set_base_url(base_url)
     analyze_rule.set_redirect_url(redirect_url)
 
@@ -147,7 +164,8 @@ def _analyze_chapter_page(
             ch = BookChapter(bookUrl=book.bookUrl, baseUrl=redirect_url)
             analyze_rule.set_chapter(ch)
 
-            ch.title  = analyze_rule._get_string(name_rule) or ""
+            raw_title = analyze_rule._get_string(name_rule) or ""
+            ch.title = engine.apply_title(raw_title, source=book_source, book=book, chapter=ch)
             ch.url    = analyze_rule._get_string(url_rule) or ""
             ch.tag    = analyze_rule._get_string(uptime_rule)
             is_volume = analyze_rule._get_string(volume_rule) or ""

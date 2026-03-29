@@ -17,10 +17,18 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import threading
 import urllib.parse
 import html
+import uuid
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
+
+from .engine import resolve_engine
+from .exceptions import UnsupportedHeadlessOperation
+from .models.js_url import JsURL
+from .utils.html_formatter import format_keep_img
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +37,7 @@ from typing import Any, Callable, Dict, Optional
 
 _JS_RUNTIME = None
 _JS_ENGINE = "none"
+_EXECJS_CONTEXT = threading.local()
 
 # Try execjs (Node.js) first for better ES6+ support
 try:
@@ -60,11 +69,24 @@ class JsExtensions:
         put_fn: Optional[Callable[[str, str], None]] = None,
         get_fn: Optional[Callable[[str], str]] = None,
         ajax_fn: Optional[Callable[[str], Optional[str]]] = None,
+        source_getter: Optional[Callable[[], Any]] = None,
+        header_map_getter: Optional[Callable[[], Dict[str, str]]] = None,
+        response_fn: Optional[Callable[[], Any]] = None,
+        engine=None,
     ) -> None:
+        self.engine = resolve_engine(engine)
         self._base_url = base_url
         self._put = put_fn or (lambda k, v: None)
         self._get = get_fn or (lambda k: "")
         self._ajax = ajax_fn or self._default_ajax
+        self._source_getter = source_getter or (lambda: None)
+        self._header_map_getter = header_map_getter or (lambda: {})
+        self._response_fn = response_fn or (lambda: None)
+        self._allow_browser_capture = False
+        self.logs = []
+        self.toasts = []
+        self.browser_url = ""
+        self.browser_title = ""
 
     def _default_ajax(self, url: str) -> Optional[str]:
         try:
@@ -82,10 +104,26 @@ class JsExtensions:
         return self._ajax(url_str)
 
     def ajaxAll(self, url_list) -> list:  # noqa: N802
-        return [self.ajax(u) for u in url_list]
+        return [self.connect(u) for u in url_list]
 
-    def connect(self, url: str) -> Any:
-        return self.ajax(url)
+    def connect(self, url: str, header: Optional[str] = None) -> Any:
+        from .analyze_url import AnalyzeUrl
+        header_map = None
+        if header:
+            try:
+                import json
+                parsed = json.loads(header)
+                if isinstance(parsed, dict):
+                    header_map = {str(k): str(v) for k, v in parsed.items()}
+            except Exception:
+                header_map = None
+        source = self.get_source()
+        return AnalyzeUrl(
+            url,
+            source=source,
+            header_map_f=header_map,
+            engine=self.engine,
+        ).get_str_response()
 
     # ---- variable store ----
 
@@ -93,8 +131,38 @@ class JsExtensions:
         self._put(str(key), str(value))
         return str(value)
 
-    def get(self, key: str) -> str:
-        return self._get(str(key))
+    def get(self, key: str, headers: Optional[Dict[str, str]] = None) -> Any:
+        if headers is None:
+            return self._get(str(key))
+        if isinstance(headers, str):
+            try:
+                import json
+
+                headers = json.loads(headers) or {}
+            except Exception:
+                headers = {}
+        return self._request_compat("GET", str(key), headers=headers)
+
+    def get_source(self) -> Any:
+        return self._source_getter()
+
+    def getHeaderMap(self) -> Dict[str, str]:  # noqa: N802
+        return self._header_map_getter()
+
+    def getResponse(self) -> Any:  # noqa: N802
+        return self._response_fn()
+
+    def cachePut(self, key: str, value: Any) -> Any:  # noqa: N802
+        return self.engine.cache.put(key, value)
+
+    def cacheGet(self, key: str, default: Any = "") -> Any:  # noqa: N802
+        return self.engine.cache.get(key, default)
+
+    def cacheRemove(self, key: str) -> None:  # noqa: N802
+        self.engine.cache.remove(key)
+
+    def cacheClear(self) -> None:  # noqa: N802
+        self.engine.cache.clear()
 
     # ---- encoding ----
 
@@ -113,6 +181,33 @@ class JsExtensions:
         except Exception:
             return b""
 
+    def strToBytes(self, text: str, charset: str = "UTF-8") -> bytes:  # noqa: N802
+        try:
+            return str(text).encode(charset, errors="replace")
+        except Exception:
+            return str(text).encode("utf-8", errors="replace")
+
+    def bytesToStr(self, data: Any, charset: str = "UTF-8") -> str:  # noqa: N802
+        if isinstance(data, str):
+            return data
+        if isinstance(data, (bytes, bytearray)):
+            try:
+                return bytes(data).decode(charset, errors="replace")
+            except Exception:
+                return bytes(data).decode("utf-8", errors="replace")
+        if isinstance(data, list):
+            try:
+                return bytes(int(item) & 0xFF for item in data).decode(charset, errors="replace")
+            except Exception:
+                return ""
+        return str(data)
+
+    def hexDecodeToByteArray(self, hex_str: str) -> bytes:  # noqa: N802
+        try:
+            return bytes.fromhex(hex_str)
+        except Exception:
+            return b""
+
     def hexEncode(self, data: Any) -> str:  # noqa: N802
         if isinstance(data, (bytes, bytearray)):
             return data.hex()
@@ -127,8 +222,18 @@ class JsExtensions:
     def hexDecodeToString(self, hex_str: str) -> str:  # noqa: N802
         return self.hexDecode(hex_str)
 
+    def hexEncodeToString(self, text: str) -> str:  # noqa: N802
+        return self.hexEncode(text)
+
     def md5(self, text: str) -> str:
         return hashlib.md5(text.encode()).hexdigest()
+
+    def md5Encode(self, text: str) -> str:  # noqa: N802
+        return self.md5(text)
+
+    def md5Encode16(self, text: str) -> str:  # noqa: N802
+        digest = self.md5(text)
+        return digest[8:24]
 
     def sha1(self, text: str) -> str:
         return hashlib.sha1(text.encode()).hexdigest()
@@ -138,6 +243,9 @@ class JsExtensions:
 
     def urlEncode(self, text: str, charset: str = "UTF-8") -> str:  # noqa: N802
         return urllib.parse.quote(text, encoding=charset)
+
+    def encodeURI(self, text: str, charset: str = "UTF-8") -> str:  # noqa: N802
+        return self.urlEncode(text, charset)
 
     def urlDecode(self, text: str, charset: str = "UTF-8") -> str:  # noqa: N802
         return urllib.parse.unquote(text, encoding=charset)
@@ -160,32 +268,65 @@ class JsExtensions:
         return json.dumps(obj, ensure_ascii=False)
 
     def log(self, msg: str) -> None:
-        pass  # no-op in headless mode
+        self.logs.append(str(msg))
+        return msg
+
+    def logType(self, any_value: Any) -> None:  # noqa: N802
+        if any_value is None:
+            self.log("null")
+        else:
+            self.log(type(any_value).__name__)
 
     def longToast(self, msg: str) -> None:  # noqa: N802
-        pass  # no-op in headless mode
+        self.toasts.append(str(msg))
 
     def toast(self, msg: str) -> None:
-        pass  # no-op in headless mode
+        self.toasts.append(str(msg))
 
     def deviceID(self) -> str:  # noqa: N802
-        raise NotImplementedError("deviceID not available in headless mode")
+        return str(getattr(self.engine, "device_id", ""))
 
     def androidId(self) -> str:  # noqa: N802
-        raise NotImplementedError("androidId not available in headless mode")
+        return str(getattr(self.engine, "android_id", getattr(self.engine, "device_id", "")))
 
     def startBrowser(self, url: str, title: str = "") -> None:  # noqa: N802
-        pass  # no-op in headless mode
+        raise UnsupportedHeadlessOperation("startBrowser", str(url))
 
     def startBrowserAwait(self, url: str, title: str = "") -> Any:  # noqa: N802
-        # Return a stub with a body() method so JS can call .body()
-        class _Resp:
-            def body(self):
-                return ""
-        return _Resp()
+        raise UnsupportedHeadlessOperation("startBrowserAwait", str(url))
+
+    def webView(self, html: Optional[str], url: Optional[str], js: Optional[str]) -> str:  # noqa: N802
+        raise UnsupportedHeadlessOperation("webView", str(url or "")[:120])
+
+    def webViewGetSource(  # noqa: N802
+        self,
+        html: Optional[str],
+        url: Optional[str],
+        js: Optional[str],
+        sourceRegex: str,
+    ) -> str:
+        raise UnsupportedHeadlessOperation("webViewGetSource", sourceRegex)
+
+    def webViewGetOverrideUrl(  # noqa: N802
+        self,
+        html: Optional[str],
+        url: Optional[str],
+        js: Optional[str],
+        overrideUrlRegex: str,
+    ) -> str:
+        raise UnsupportedHeadlessOperation("webViewGetOverrideUrl", overrideUrlRegex)
+
+    def getVerificationCode(self, imageUrl: str) -> str:  # noqa: N802
+        raise UnsupportedHeadlessOperation("getVerificationCode", imageUrl)
 
     def getBaseUrl(self) -> str:  # noqa: N802
         return self._base_url
+
+    def htmlFormat(self, text: str) -> str:  # noqa: N802
+        return format_keep_img(text, self._base_url)
+
+    def toURL(self, url: str, baseUrl: Optional[str] = None) -> JsURL:  # noqa: N802
+        return JsURL.from_url(str(url), baseUrl or self._base_url or None)
 
     def timeFormat(self, time_ms: Any) -> str:  # noqa: N802
         try:
@@ -230,6 +371,141 @@ class JsExtensions:
     def qread(self) -> bool:
         return False
 
+    def randomUUID(self) -> str:  # noqa: N802
+        return str(uuid.uuid4())
+
+    def cacheFile(self, url: str, saveTime: int = 0) -> str:  # noqa: N802
+        cache_key = self.md5Encode16(str(url))
+        cached = self.engine.get_cached_text(cache_key)
+        if cached is not None:
+            return cached
+        text = self._read_text_resource(str(url))
+        self.engine.put_cached_text(cache_key, text, int(saveTime or 0))
+        return text
+
+    def importScript(self, path: str) -> str:  # noqa: N802
+        path_str = str(path)
+        if path_str.startswith(("http://", "https://")):
+            return self.cacheFile(path_str)
+        return self._read_text_resource(path_str)
+
+    def _read_text_resource(self, path_or_url: str) -> str:
+        if path_or_url.startswith(("http://", "https://")):
+            response = self.connect(path_or_url)
+            body_obj = getattr(response, "body", None)
+            if callable(body_obj):
+                body_obj = body_obj()
+            if hasattr(body_obj, "string") and callable(body_obj.string):
+                return str(body_obj.string())
+            if isinstance(body_obj, str):
+                return body_obj
+            if hasattr(response, "body") and not callable(getattr(response, "body")):
+                return str(getattr(response, "body") or "")
+            return ""
+        path = Path(path_or_url).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        return path.read_text(encoding="utf-8")
+
+    def _request_compat(
+        self,
+        method: str,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        body: Optional[str] = None,
+    ) -> Any:
+        import requests
+
+        from .pipeline import JsBody, JsHeaders
+
+        session = requests.Session()
+        request_headers = {str(k): str(v) for k, v in (headers or {}).items()}
+        try:
+            response = session.request(
+                method.upper(),
+                str(url),
+                headers=request_headers,
+                data=body,
+                allow_redirects=False,
+                timeout=30,
+            )
+        except Exception as exc:
+            response = None
+            error_text = str(exc)
+        else:
+            error_text = ""
+
+        class _RequestInfo:
+            def __init__(self, request_url: str) -> None:
+                self._request_url = request_url
+
+            def url(self) -> str:
+                return self._request_url
+
+        class _RawInfo:
+            def __init__(self, request_url: str) -> None:
+                self._request_url = request_url
+
+            def request(self) -> _RequestInfo:
+                return _RequestInfo(self._request_url)
+
+        class _CompatResponse:
+            def __init__(self) -> None:
+                if response is None:
+                    self._url = str(url)
+                    self._body = error_text
+                    self._status = 599
+                    self._headers: Dict[str, str] = {}
+                    self._message = error_text
+                    self._request_url = str(url)
+                else:
+                    self._url = str(response.url)
+                    self._body = response.text if method.upper() != "HEAD" else ""
+                    self._status = int(response.status_code)
+                    self._headers = {str(k): str(v) for k, v in response.headers.items()}
+                    self._message = getattr(response, "reason", "") or ""
+                    self._request_url = str(getattr(response.request, "url", url))
+
+            def body(self) -> JsBody:
+                return JsBody(self._body)
+
+            def code(self) -> int:
+                return self._status
+
+            def header(self, name: str) -> Optional[str]:
+                return self.headers().get(name)
+
+            def headers(self) -> JsHeaders:
+                return JsHeaders(self._headers)
+
+            def message(self) -> str:
+                return self._message
+
+            def raw(self) -> _RawInfo:
+                return _RawInfo(self._request_url)
+
+        return _CompatResponse()
+
+    def head(self, url: str, headers: Dict[str, str]) -> Any:  # noqa: N802
+        if isinstance(headers, str):
+            try:
+                import json
+
+                headers = json.loads(headers) or {}
+            except Exception:
+                headers = {}
+        return self._request_compat("HEAD", url, headers=headers)
+
+    def post(self, url: str, body: str, headers: Dict[str, str]) -> Any:
+        if isinstance(headers, str):
+            try:
+                import json
+
+                headers = json.loads(headers) or {}
+            except Exception:
+                headers = {}
+        return self._request_compat("POST", url, headers=headers, body=body)
+
 
 # ---------------------------------------------------------------------------
 # eval_js – main entry point
@@ -253,12 +529,18 @@ def eval_js(
         return result
 
     source = bindings.get("source") if bindings else None
+    engine = (
+        (bindings.get("engine") if bindings else None)
+        or getattr(java_obj, "engine", None)
+    )
+    engine = resolve_engine(engine)
     if source and hasattr(source, "jsLib") and source.jsLib:
         js_str = f"{source.jsLib}\n\n{js_str}"
 
     ctx: Dict[str, Any] = {
         "result": result,
         "baseUrl": "",
+        "url": "",
         "book": None,
         "source": None,
         "page": 1,
@@ -270,7 +552,9 @@ def eval_js(
         "src": None,
         "nextChapterUrl": None,
         "rssArticle": None,
-        "java": java_obj or JsExtensions(),
+        "cache": engine.cache,
+        "engine": engine,
+        "java": java_obj or JsExtensions(engine=engine),
     }
     if bindings:
         ctx.update(bindings)
@@ -294,11 +578,17 @@ def _run_js2py(js_str: str, ctx: Dict[str, Any]) -> Any:
         wrapped = f"(function(){{ {js_str} }})()"
         return js_ctx.eval(wrapped)
     except Exception as e:
-        import traceback
-        # traceback.print_exc()  # Debugging only
+        if isinstance(e, UnsupportedHeadlessOperation):
+            raise
         try:
             return js2py.eval_js(js_str)
         except Exception as e2:
+            if isinstance(e2, UnsupportedHeadlessOperation):
+                raise
+            if "Unsupported headless operation:" in str(e) or "Unsupported headless operation:" in str(e2):
+                detail = str(e2 if "Unsupported headless operation:" in str(e2) else e)
+                operation = detail.split("Unsupported headless operation:", 1)[1].strip()
+                raise UnsupportedHeadlessOperation(operation)
             print(f"JS Engine Error: {e} | Fallback Error: {e2}")
             return None
 
@@ -321,73 +611,485 @@ function run(ctx) {
         } catch (e) {}
     }
 
+    function createBodyWrapper(text) {
+        var value = text == null ? "" : String(text);
+        return {
+            string: function() { return value; },
+            toString: function() { return value; },
+            valueOf: function() { return value; }
+        };
+    }
+
+    function createHeadersWrapper(headers, mutable) {
+        var backing = headers || {};
+        return {
+            _backing: backing,
+            get: function(key) {
+                var lookup = String(key || "").toLowerCase();
+                for (var name in backing) {
+                    if (String(name).toLowerCase() === lookup) {
+                        return backing[name];
+                    }
+                }
+                return null;
+            },
+            put: function(key, value) {
+                if (mutable) {
+                    backing[String(key)] = value == null ? "" : String(value);
+                }
+            },
+            putAll: function(other) {
+                if (!mutable || !other) return;
+                var source = other._backing || other;
+                for (var name in source) {
+                    if (typeof source[name] !== 'function') {
+                        backing[String(name)] = source[name] == null ? "" : String(source[name]);
+                    }
+                }
+            },
+            toJSON: function() { return backing; }
+        };
+    }
+
+    function unwrapBinary(value) {
+        if (!value) return value;
+        if (value._legado_type === 'ByteArray' && value.base64 != null) {
+            return Buffer.from(String(value.base64), 'base64');
+        }
+        if (Buffer.isBuffer(value)) {
+            return value;
+        }
+        if (Array.isArray(value)) {
+            return Buffer.from(value);
+        }
+        if (value.type === 'Buffer' && Array.isArray(value.data)) {
+            return Buffer.from(value.data);
+        }
+        return value;
+    }
+
+    function wrapBinary(value) {
+        if (!value) return value;
+        if (value._legado_type === 'ByteArray') {
+            return value;
+        }
+        if (Buffer.isBuffer(value)) {
+            return {
+                _legado_type: 'ByteArray',
+                base64: value.toString('base64')
+            };
+        }
+        if (Array.isArray(value)) {
+            for (var i = 0; i < value.length; i++) {
+                if (typeof value[i] !== 'number') {
+                    return value;
+                }
+            }
+            return {
+                _legado_type: 'ByteArray',
+                base64: Buffer.from(value).toString('base64')
+            };
+        }
+        if (value.type === 'Buffer' && Array.isArray(value.data)) {
+            return {
+                _legado_type: 'ByteArray',
+                base64: Buffer.from(value.data).toString('base64')
+            };
+        }
+        return value;
+    }
+
+    function wrapReturnValue(value) {
+        if (!value) return value;
+        if (value._legado_type === 'StrResponse' || value._legado_type === 'ByteArray') {
+            return value;
+        }
+        return wrapBinary(value);
+    }
+
+    function wrapStrResponse(value) {
+        if (!value) return value;
+        if (value._legado_type === 'StrResponse' && typeof value.body === 'function') {
+            return value;
+        }
+        if (value._legado_type === 'StrResponse') {
+            return {
+                _legado_type: 'StrResponse',
+                url: String(value.url || ""),
+                requestUrl: String(value.requestUrl || value.url || ""),
+                bodyText: value.bodyText == null ? "" : String(value.bodyText),
+                statusCode: Number(value.statusCode || 0),
+                messageText: value.messageText == null ? "" : String(value.messageText),
+                headersMap: value.headersMap || {},
+                body: function() { return createBodyWrapper(this.bodyText); },
+                code: function() { return this.statusCode; },
+                headers: function() { return createHeadersWrapper(this.headersMap, false); },
+                header: function(name) { return this.headers().get(name); },
+                message: function() { return this.messageText; },
+                raw: function() {
+                    var requestUrl = this.requestUrl;
+                    return {
+                        request: function() {
+                            return {
+                                url: function() { return requestUrl; }
+                            };
+                        }
+                    };
+                },
+                toString: function() { return this.bodyText; }
+            };
+        }
+        return value;
+    }
+
+    function binaryStringToBuffer(value) {
+        var text = String(value == null ? "" : value);
+        var arr = [];
+        for (var i = 0; i < text.length; i++) {
+            arr.push(text.charCodeAt(i) & 0xFF);
+        }
+        return Buffer.from(arr);
+    }
+
+    function toCompatBuffer(value, encodingHint) {
+        if (value == null) return Buffer.alloc(0);
+        if (Buffer.isBuffer(value)) return value;
+        if (value && value._legado_type === 'ByteArray' && value.base64 != null) {
+            return Buffer.from(String(value.base64), 'base64');
+        }
+        if (Array.isArray(value)) {
+            return Buffer.from(value.map(function(item) { return Number(item) & 0xFF; }));
+        }
+        if (value.type === 'Buffer' && Array.isArray(value.data)) {
+            return Buffer.from(value.data);
+        }
+        if (typeof value === 'string') {
+            if (encodingHint === 'hex') return Buffer.from(value, 'hex');
+            if (encodingHint === 'base64') return Buffer.from(value, 'base64');
+            if (encodingHint === 'binary') return binaryStringToBuffer(value);
+            return Buffer.from(value, 'utf8');
+        }
+        return Buffer.from(String(value), 'utf8');
+    }
+
+    function bufferToBinaryString(buffer) {
+        return Array.prototype.map.call(buffer, function(code) {
+            return String.fromCharCode(code);
+        }).join('');
+    }
+
+    function bufferToWordArray(buffer) {
+        var words = [];
+        for (var i = 0; i < buffer.length; i++) {
+            words[(i / 4) | 0] |= buffer[i] << (24 - 8 * (i % 4));
+        }
+        return { words: words, sigBytes: buffer.length };
+    }
+
+    function wordArrayToBuffer(wordArray) {
+        if (!wordArray) return Buffer.alloc(0);
+        if (Buffer.isBuffer(wordArray)) return wordArray;
+        if (Array.isArray(wordArray)) return Buffer.from(wordArray.map(function(item) { return Number(item) & 0xFF; }));
+        var words = wordArray.words || [];
+        var sigBytes = Number(wordArray.sigBytes != null ? wordArray.sigBytes : words.length * 4);
+        var buffer = Buffer.alloc(Math.max(0, sigBytes));
+        for (var i = 0; i < sigBytes; i++) {
+            buffer[i] = (words[(i / 4) | 0] >>> (24 - 8 * (i % 4))) & 0xFF;
+        }
+        return buffer;
+    }
+
+    function asCompatResult(buffer, options) {
+        var opts = options || {};
+        if (opts.asBytes) return Array.from(buffer.values());
+        if (opts.asString) return bufferToBinaryString(buffer);
+        if (opts.asBase64) return buffer.toString('base64');
+        return buffer.toString('hex');
+    }
+
+    function createDigestFunction(algo) {
+        var fn = function(message, options) {
+            var digest = crypto.createHash(algo).update(toCompatBuffer(message)).digest();
+            return asCompatResult(digest, options);
+        };
+        fn._algo = algo;
+        return fn;
+    }
+
+    function createHmacFunction(hashFn, message, key, options) {
+        var algo = (hashFn && hashFn._algo) || 'sha1';
+        var digest = crypto
+            .createHmac(algo, toCompatBuffer(key))
+            .update(toCompatBuffer(message))
+            .digest();
+        return asCompatResult(digest, options);
+    }
+
+    var legacyCrypto = {
+        util: {
+            randomBytes: function(len) {
+                return Array.from(crypto.randomBytes(Math.max(0, Number(len || 0))).values());
+            },
+            bytesToWords: function(bytes) {
+                return bufferToWordArray(toCompatBuffer(bytes)).words;
+            },
+            wordsToBytes: function(words) {
+                return Array.from(wordArrayToBuffer({ words: words || [], sigBytes: (words || []).length * 4 }).values());
+            },
+            bytesToHex: function(bytes) {
+                return toCompatBuffer(bytes).toString('hex');
+            },
+            hexToBytes: function(hex) {
+                return Array.from(toCompatBuffer(hex, 'hex').values());
+            },
+            bytesToBase64: function(bytes) {
+                return toCompatBuffer(bytes).toString('base64');
+            },
+            base64ToBytes: function(text) {
+                return Array.from(toCompatBuffer(text, 'base64').values());
+            }
+        },
+        charenc: {
+            UTF8: {
+                stringToBytes: function(text) { return Array.from(toCompatBuffer(text).values()); },
+                bytesToString: function(bytes) { return toCompatBuffer(bytes).toString('utf8'); }
+            },
+            Binary: {
+                stringToBytes: function(text) { return Array.from(toCompatBuffer(text, 'binary').values()); },
+                bytesToString: function(bytes) { return bufferToBinaryString(toCompatBuffer(bytes)); }
+            }
+        }
+    };
+    legacyCrypto.MD5 = createDigestFunction('md5');
+    legacyCrypto.SHA1 = createDigestFunction('sha1');
+    legacyCrypto.SHA256 = createDigestFunction('sha256');
+    legacyCrypto.HMAC = createHmacFunction;
+
+    function shellQuote(value) {
+        return "'" + String(value == null ? "" : value).replace(/'/g, "'\\''") + "'";
+    }
+
+    function parseOptionUrl(url) {
+        var urlStr = String(url || "");
+        var actualUrl = urlStr;
+        var options = {};
+        var splitIdx = -1;
+        for (var i = urlStr.length - 2; i >= 0; i--) {
+            if (urlStr.substring(i, i + 2) === ',{') {
+                try {
+                    options = JSON.parse(urlStr.substring(i + 1));
+                    splitIdx = i;
+                    break;
+                } catch (e) {}
+            }
+        }
+        if (splitIdx !== -1) {
+            actualUrl = urlStr.substring(0, splitIdx);
+        }
+        return { actualUrl: actualUrl, options: options };
+    }
+
+    function parseHeaderBlock(text) {
+        var raw = String(text || "").trim();
+        if (!raw) {
+            return { statusCode: 0, messageText: "", headersMap: {} };
+        }
+        var blocks = raw.split(/\r?\n\r?\n(?=HTTP\/)/);
+        var block = blocks[blocks.length - 1];
+        var lines = block.split(/\r?\n/);
+        var statusLine = lines.shift() || "";
+        var match = statusLine.match(/^HTTP\/\S+\s+(\d+)\s*(.*)$/);
+        var headersMap = {};
+        for (var i = 0; i < lines.length; i++) {
+            var idx = lines[i].indexOf(':');
+            if (idx > 0) {
+                headersMap[lines[i].substring(0, idx).trim()] = lines[i].substring(idx + 1).trim();
+            }
+        }
+        return {
+            statusCode: match ? Number(match[1] || 0) : 0,
+            messageText: match ? String(match[2] || "") : "",
+            headersMap: headersMap
+        };
+    }
+
+    function cloneHeaders(headers) {
+        var out = {};
+        if (!headers) return out;
+        for (var key in headers) {
+            if (Object.prototype.hasOwnProperty.call(headers, key) && headers[key] != null) {
+                out[String(key)] = String(headers[key]);
+            }
+        }
+        return out;
+    }
+
+    function headerName(headers, target) {
+        if (!headers) return "";
+        var lower = String(target || "").toLowerCase();
+        for (var key in headers) {
+            if (String(key).toLowerCase() === lower) {
+                return key;
+            }
+        }
+        return "";
+    }
+
+    function getSourceDefaultHeaders() {
+        var headers = {};
+        try {
+            if (ctx.source_data && ctx.source_data.header) {
+                headers = cloneHeaders(JSON.parse(ctx.source_data.header) || {});
+            }
+        } catch (e) {}
+        try {
+            if (ctx._source_vars && ctx._source_vars._login_header) {
+                var loginHeaders = cloneHeaders(JSON.parse(ctx._source_vars._login_header) || {});
+                for (var name in loginHeaders) {
+                    headers[name] = loginHeaders[name];
+                }
+            }
+        } catch (e) {}
+        return headers;
+    }
+
+    function requestWithCurl(url, extra) {
+        extra = extra || {};
+        var parsed = parseOptionUrl(url);
+        var actualUrl = parsed.actualUrl;
+        var options = parsed.options || {};
+        var method = String(extra.method || options.method || 'GET').toUpperCase();
+        var headers = getSourceDefaultHeaders();
+        if (options.headers) {
+            for (var key in options.headers) headers[key] = String(options.headers[key]);
+        }
+        if (extra.headers) {
+            for (var h in extra.headers) headers[h] = String(extra.headers[h]);
+        }
+        var cookieHeaderKey = headerName(headers, 'Cookie') || headerName(headers, 'cookie');
+        if (!cookieHeaderKey) {
+            try {
+                var implicitCookie = cookie.getCookie(actualUrl);
+                if (implicitCookie) {
+                    headers['Cookie'] = implicitCookie;
+                }
+            } catch (e) {}
+        }
+        var body = extra.body != null ? extra.body : options.body;
+        var followRedirects = extra.followRedirects !== false;
+        var cookieJar = ctx._cookie_file;
+        var id = crypto.randomUUID();
+        var headerPath = '/tmp/legado_hdr_' + id + '.txt';
+        var bodyPath = '/tmp/legado_body_' + id + '.txt';
+        var cmd = 'curl -sS --compressed --connect-timeout 10 --max-time 30 -c ' + shellQuote(cookieJar) + ' -b ' + shellQuote(cookieJar);
+        if (followRedirects) {
+            cmd += ' -L';
+        }
+        cmd += ' -X ' + shellQuote(method);
+        cmd += ' -D ' + shellQuote(headerPath) + ' -o ' + shellQuote(bodyPath);
+        cmd += ' -w ' + shellQuote('\n__EFFECTIVE_URL__:%{url_effective}');
+        for (var name in headers) {
+            cmd += ' -H ' + shellQuote(name + ': ' + String(headers[name]));
+        }
+        if (body != null && method !== 'GET' && method !== 'HEAD') {
+            var bodyText = typeof body === 'string' ? body : JSON.stringify(body);
+            cmd += ' --data ' + shellQuote(bodyText);
+        }
+        cmd += ' ' + shellQuote(actualUrl);
+        try {
+            var meta = String(child_process.execSync(cmd));
+            var headerText = '';
+            var bodyTextOut = '';
+            try { headerText = fs.readFileSync(headerPath, 'utf8'); } catch (e) {}
+            try { bodyTextOut = fs.readFileSync(bodyPath, 'utf8'); } catch (e) {}
+            try { fs.unlinkSync(headerPath); } catch (e) {}
+            try { fs.unlinkSync(bodyPath); } catch (e) {}
+            var info = parseHeaderBlock(headerText);
+            var effectiveMatch = meta.match(/__EFFECTIVE_URL__:(.*)$/m);
+            return wrapStrResponse({
+                _legado_type: 'StrResponse',
+                url: effectiveMatch ? String(effectiveMatch[1] || "").trim() : actualUrl,
+                requestUrl: effectiveMatch ? String(effectiveMatch[1] || "").trim() : actualUrl,
+                bodyText: method === 'HEAD' ? "" : bodyTextOut,
+                statusCode: info.statusCode,
+                messageText: info.messageText,
+                headersMap: info.headersMap
+            });
+        } catch (e) {
+            try { fs.unlinkSync(headerPath); } catch (err) {}
+            try { fs.unlinkSync(bodyPath); } catch (err) {}
+            logToFile("HTTP ERROR: " + e);
+            return wrapStrResponse({
+                _legado_type: 'StrResponse',
+                url: actualUrl,
+                requestUrl: actualUrl,
+                bodyText: String(e),
+                statusCode: 599,
+                messageText: String(e),
+                headersMap: {}
+            });
+        }
+    }
+
+    function resolvePath(path) {
+        var value = String(path || "");
+        if (value.startsWith('~')) {
+            var home = process.env.HOME || '';
+            return home ? home + value.substring(1) : value;
+        }
+        if (value.startsWith('/')) {
+            return value;
+        }
+        return require('path').join(process.cwd(), value);
+    }
+
+    function htmlFormatImpl(value, baseUrl) {
+        var html = String(value == null ? "" : value);
+        if (!html) return "";
+        var base = String(baseUrl || "");
+        if (base) {
+            html = html.replace(/src="([^"]*)"/gi, function(_, src) {
+                try { return 'src="' + new URL(src, base).toString() + '"'; } catch (e) { return 'src="' + src + '"'; }
+            });
+            html = html.replace(/src='([^']*)'/gi, function(_, src) {
+                try { return 'src="' + new URL(src, base).toString() + '"'; } catch (e) { return 'src="' + src + '"'; }
+            });
+        }
+        return html;
+    }
+
+    function toURLImpl(url, baseUrl) {
+        var parsed = baseUrl ? new URL(String(url || ""), String(baseUrl || "")) : new URL(String(url || ""));
+        var searchParams = {};
+        var hasParams = false;
+        parsed.searchParams.forEach(function(value, key) {
+            searchParams[key] = value;
+            hasParams = true;
+        });
+        return {
+            host: parsed.hostname || "",
+            origin: parsed.origin || "",
+            pathname: parsed.pathname || "",
+            searchParams: hasParams ? searchParams : null
+        };
+    }
+
+    function analyzeRuleBridge(payload) {
+        var raw = child_process.execFileSync(
+            'python3',
+            ['-m', 'legado_engine.js_analyze_bridge'],
+            {
+                input: JSON.stringify(payload),
+                maxBuffer: 10 * 1024 * 1024
+            }
+        ).toString();
+        var parsed = JSON.parse(raw || '{}');
+        return parsed.result;
+    }
+
     var java = {
         ajax: function(url) {
-            try {
-                logToFile("JAVA.AJAX CALL: " + url.substring(0, 200));
-                var actualUrl = url;
-                var options = {};
-                
-                // Parse options if present (url,options format)
-                // We scan from right to left for ",{" to find the split point
-                var splitIdx = -1;
-                for (var i = url.length - 2; i >= 0; i--) {
-                    if (url.substring(i, i+2) === ',{') {
-                         try {
-                             var jsonStr = url.substring(i + 1);
-                             options = JSON.parse(jsonStr);
-                             splitIdx = i;
-                             break;
-                         } catch(e) {}
-                    }
-                }
-                
-                if (splitIdx !== -1) {
-                    actualUrl = url.substring(0, splitIdx);
-                }
-
-                // Construct curl command
-                // Use -s (silent), -L (follow redirects), --compressed
-                // Add cookie jar support
-                var cookieJar = '/tmp/legado_cookies.txt';
-                var cmd = 'curl -s -L --compressed --connect-timeout 10 --max-time 30 -c ' + cookieJar + ' -b ' + cookieJar;
-                
-                if (options.method) {
-                    cmd += ' -X ' + options.method;
-                }
-                
-                if (options.headers) {
-                    for (var key in options.headers) {
-                        var val = options.headers[key];
-                        // Escape double quotes in value
-                        val = String(val).replace(/"/g, '\\"');
-                        cmd += ' -H "' + key + ': ' + val + '"';
-                    }
-                }
-                
-                if (options.body) {
-                    var bodyStr = options.body;
-                    if (typeof bodyStr !== 'string') {
-                        bodyStr = JSON.stringify(bodyStr);
-                    }
-                    // Escape single quotes for shell single-quoted string
-                    // ' -> '\''
-                    bodyStr = bodyStr.replace(/'/g, "'\\''"); 
-                    cmd += " -d '" + bodyStr + "'";
-                }
-                
-                // Escape double quotes in URL
-                actualUrl = actualUrl.replace(/"/g, '\\"');
-                cmd += ' "' + actualUrl + '"';
-                
-                logToFile("CURL CMD: " + cmd);
-                var res = child_process.execSync(cmd).toString();
-                // logToFile("CURL RES: " + res.substring(0, 500));
-                return res;
-            } catch (e) {
-                logToFile("AJAX ERROR: " + e);
-                return null;
-            }
+            return requestWithCurl(url, { followRedirects: true }).body().string();
         },
         put: function(k, v) {
             var val = v == null ? "" : String(v);
@@ -395,18 +1097,66 @@ function run(ctx) {
             ctx._vars[k] = val;
             return val;
         },
-        get: function(k) {
+        get: function(k, headers) {
+            if (arguments.length > 1) {
+                return requestWithCurl(k, { method: 'GET', headers: headers || {}, followRedirects: false });
+            }
             var val = ctx._vars[k];
             return val == null ? "" : String(val);
         },
         log: function(msg) {
             logToFile("JS LOG: " + msg);
             ctx._events.logs.push(String(msg));
+            return msg;
+        },
+        logType: function(any) {
+            if (any == null) {
+                java.log("null");
+                return;
+            }
+            if (any && any._legado_type) {
+                java.log(any._legado_type);
+                return;
+            }
+            if (Buffer.isBuffer(any)) {
+                java.log("Buffer");
+                return;
+            }
+            if (Array.isArray(any)) {
+                java.log("Array");
+                return;
+            }
+            var ctor = any && any.constructor && any.constructor.name;
+            java.log(ctor || typeof any);
         },
         
         // Crypto / Encoding
         base64Encode: function(str) { return Buffer.from(str).toString('base64'); },
         base64Decode: function(str) { return Buffer.from(str, 'base64').toString('utf8'); },
+        base64DecodeToByteArray: function(str) {
+            try {
+                return Buffer.from(String(str || ""), 'base64');
+            } catch (e) {
+                return Buffer.alloc(0);
+            }
+        },
+        strToBytes: function(str, charset) {
+            return Buffer.from(String(str == null ? "" : str), charset || 'utf8');
+        },
+        bytesToStr: function(bytes, charset) {
+            try {
+                return unwrapBinary(bytes).toString(charset || 'utf8');
+            } catch (e) {
+                return "";
+            }
+        },
+        hexDecodeToByteArray: function(hex) {
+            try {
+                return Buffer.from(String(hex || ""), 'hex');
+            } catch (e) {
+                return Buffer.alloc(0);
+            }
+        },
         hexDecodeToString: function(str) { 
             try {
                 if (!str) return "";
@@ -418,10 +1168,119 @@ function run(ctx) {
                 return str;
             } catch(e) { return str; }
         },
+        hexEncodeToString: function(str) {
+            return Buffer.from(String(str == null ? "" : str), 'utf8').toString('hex');
+        },
         md5: function(str) { return crypto.createHash('md5').update(str).digest('hex'); },
+        md5Encode: function(str) { return crypto.createHash('md5').update(str).digest('hex'); },
+        md5Encode16: function(str) {
+            var digest = crypto.createHash('md5').update(str).digest('hex');
+            return digest.substring(8, 24);
+        },
         sha1: function(str) { return crypto.createHash('sha1').update(str).digest('hex'); },
         sha256: function(str) { return crypto.createHash('sha256').update(str).digest('hex'); },
-        
+        encodeURI: function(str) { return encodeURIComponent(String(str == null ? "" : str)); },
+        randomUUID: function() {
+            return crypto.randomUUID();
+        },
+        htmlFormat: function(str) {
+            return htmlFormatImpl(str, ctx.baseUrl || "");
+        },
+        toURL: function(url, baseUrl) {
+            return toURLImpl(url, baseUrl || ctx.baseUrl || "");
+        },
+        setContent: function(content, baseUrl) {
+            var nextBase = baseUrl == null ? (ctx._analysis_base_url || ctx.baseUrl || "") : String(baseUrl);
+            var result = analyzeRuleBridge({
+                operation: 'set_content',
+                content: ctx._analysis_content,
+                baseUrl: ctx._analysis_base_url || ctx.baseUrl || "",
+                redirectUrl: ctx._analysis_redirect_url || ctx.baseUrl || "",
+                source: ctx.source_data || {},
+                book: ctx.book || {},
+                chapter: ctx.chapter || {},
+                newContent: content,
+                newBaseUrl: nextBase
+            });
+            ctx._analysis_content = result.content;
+            ctx._analysis_base_url = result.baseUrl || nextBase;
+            ctx._analysis_redirect_url = result.baseUrl || nextBase;
+        },
+        getString: function(ruleStr, mContent, isUrl) {
+            return analyzeRuleBridge({
+                operation: 'get_string',
+                rule: ruleStr,
+                mContent: mContent,
+                isUrl: !!isUrl,
+                content: ctx._analysis_content,
+                baseUrl: ctx._analysis_base_url || ctx.baseUrl || "",
+                redirectUrl: ctx._analysis_redirect_url || ctx.baseUrl || "",
+                source: ctx.source_data || {},
+                book: ctx.book || {},
+                chapter: ctx.chapter || {}
+            });
+        },
+        getStringList: function(ruleStr, mContent, isUrl) {
+            return analyzeRuleBridge({
+                operation: 'get_string_list',
+                rule: ruleStr,
+                mContent: mContent,
+                isUrl: !!isUrl,
+                content: ctx._analysis_content,
+                baseUrl: ctx._analysis_base_url || ctx.baseUrl || "",
+                redirectUrl: ctx._analysis_redirect_url || ctx.baseUrl || "",
+                source: ctx.source_data || {},
+                book: ctx.book || {},
+                chapter: ctx.chapter || {}
+            }) || [];
+        },
+        getElement: function(ruleStr) {
+            return analyzeRuleBridge({
+                operation: 'get_element',
+                rule: ruleStr,
+                content: ctx._analysis_content,
+                baseUrl: ctx._analysis_base_url || ctx.baseUrl || "",
+                redirectUrl: ctx._analysis_redirect_url || ctx.baseUrl || "",
+                source: ctx.source_data || {},
+                book: ctx.book || {},
+                chapter: ctx.chapter || {}
+            });
+        },
+        getElements: function(ruleStr) {
+            return analyzeRuleBridge({
+                operation: 'get_elements',
+                rule: ruleStr,
+                content: ctx._analysis_content,
+                baseUrl: ctx._analysis_base_url || ctx.baseUrl || "",
+                redirectUrl: ctx._analysis_redirect_url || ctx.baseUrl || "",
+                source: ctx.source_data || {},
+                book: ctx.book || {},
+                chapter: ctx.chapter || {}
+            }) || [];
+        },
+        cacheFile: function(url, saveTime) {
+            var cacheKey = java.md5Encode16(String(url || ""));
+            var now = Date.now() / 1000.0;
+            var entry = ctx._text_cache[cacheKey];
+            if (entry && (!entry.expires_at || Number(entry.expires_at) <= 0 || Number(entry.expires_at) > now)) {
+                return String(entry.value || "");
+            }
+            var text = requestWithCurl(url, { followRedirects: true }).body().string();
+            var saveSeconds = Number(saveTime || 0);
+            ctx._text_cache[cacheKey] = {
+                value: String(text || ""),
+                expires_at: saveSeconds > 0 ? now + saveSeconds : 0
+            };
+            return text;
+        },
+        importScript: function(path) {
+            var value = String(path || "");
+            if (value.startsWith('http://') || value.startsWith('https://')) {
+                return java.cacheFile(value, 0);
+            }
+            return fs.readFileSync(resolvePath(value), 'utf8');
+        },
+
         // Utils
         strToJson: function(str) { try { return JSON.parse(str); } catch(e) { return null; } },
         jsonToStr: function(obj) { return JSON.stringify(obj); },
@@ -449,17 +1308,58 @@ function run(ctx) {
             logToFile("TOAST: " + msg);
             ctx._events.toasts.push(String(msg));
         },
+        connect: function(url, header) {
+            var headerObj = {};
+            if (header) {
+                try {
+                    headerObj = typeof header === 'string' ? JSON.parse(header) : header;
+                } catch (e) {
+                    headerObj = {};
+                }
+            }
+            return requestWithCurl(url, { headers: headerObj, followRedirects: true });
+        },
+        post: function(url, body, headers) {
+            return requestWithCurl(url, { method: 'POST', body: body, headers: headers || {}, followRedirects: false });
+        },
+        head: function(url, headers) {
+            return requestWithCurl(url, { method: 'HEAD', headers: headers || {}, followRedirects: false });
+        },
+        getHeaderMap: function() {
+            return createHeadersWrapper(ctx._header_map, true);
+        },
+        getResponse: function() {
+            return requestWithCurl(ctx.url || "", { headers: ctx._header_map || {}, followRedirects: true });
+        },
+        webView: function(html, url, js) {
+            throw new Error('Unsupported headless operation: webView');
+        },
+        webViewGetSource: function(html, url, js, sourceRegex) {
+            throw new Error('Unsupported headless operation: webViewGetSource');
+        },
+        webViewGetOverrideUrl: function(html, url, js, overrideUrlRegex) {
+            throw new Error('Unsupported headless operation: webViewGetOverrideUrl');
+        },
         startBrowserAwait: function(url, title) {
+            if (!ctx._allow_browser_capture) {
+                throw new Error('Unsupported headless operation: startBrowserAwait');
+            }
             ctx._events.browserUrl = String(url || "");
             ctx._events.browserTitle = String(title || "");
             return { body: function() { return ""; } };
         },
         startBrowser: function(url, title) {
+            if (!ctx._allow_browser_capture) {
+                throw new Error('Unsupported headless operation: startBrowser');
+            }
             ctx._events.browserUrl = String(url || "");
             ctx._events.browserTitle = String(title || "");
         },
-        deviceID: function() { return "0000000000000000"; },
-        androidId: function() { return "0000000000000000"; },
+        getVerificationCode: function(url) {
+            throw new Error('Unsupported headless operation: getVerificationCode');
+        },
+        deviceID: function() { return String(ctx._device_id || ""); },
+        androidId: function() { return String(ctx._android_id || ctx._device_id || ""); },
         getCookie: function(url) { return ""; },
         timeFormat: function(timeMs) {
             try {
@@ -523,7 +1423,7 @@ function run(ctx) {
                 
                 // 2. From file
                 try {
-                    var content = fs.readFileSync('/tmp/legado_cookies.txt', 'utf8');
+                    var content = fs.readFileSync(ctx._cookie_file, 'utf8');
                     var lines = content.split('\n');
                     for (var i = 0; i < lines.length; i++) {
                         var line = lines[i].trim();
@@ -549,7 +1449,7 @@ function run(ctx) {
         removeCookie: function(url) {
              try {
                 var content = "";
-                try { content = fs.readFileSync('/tmp/legado_cookies.txt', 'utf8'); } catch(e) {}
+                try { content = fs.readFileSync(ctx._cookie_file, 'utf8'); } catch(e) {}
                 var domain = new URL(url).hostname;
                 var lines = content.split('\n');
                 var newLines = [];
@@ -568,20 +1468,84 @@ function run(ctx) {
                     }
                     newLines.push(lines[i]);
                 }
-                fs.writeFileSync('/tmp/legado_cookies.txt', newLines.join('\n'));
+                fs.writeFileSync(ctx._cookie_file, newLines.join('\n'));
+                if (ctx._cookies) {
+                    delete ctx._cookies[domain];
+                    delete ctx._cookies['.' + domain];
+                }
             } catch(e) {}
         },
         setCookie: function(url, c) {
             try {
                  var domain = new URL(url).hostname;
-                 var parts = c.split(';');
-                 var kv = parts[0].trim().split('=');
-                 var name = kv[0];
-                 var value = kv.slice(1).join('=');
+                 var jarMap = {};
+                 try {
+                     var existingContent = fs.readFileSync(ctx._cookie_file, 'utf8');
+                     var existingLines = existingContent.split('\n');
+                     for (var i = 0; i < existingLines.length; i++) {
+                         var line = existingLines[i].trim();
+                         if (!line || line.startsWith('#')) continue;
+                         var cols = line.split('\t');
+                         if (cols.length >= 7) {
+                             var jarDomain = cols[0];
+                             if (jarDomain === domain || jarDomain === '.' + domain || domain.endsWith(jarDomain)) {
+                                 jarMap[cols[5]] = cols[6];
+                             }
+                         }
+                     }
+                 } catch (e) {}
+                 var parts = String(c == null ? "" : c).split(';');
+                 for (var j = 0; j < parts.length; j++) {
+                     var part = parts[j].trim();
+                     if (!part) continue;
+                     var idx = part.indexOf('=');
+                     if (idx <= 0) continue;
+                     var name = part.substring(0, idx).trim();
+                     var value = part.substring(idx + 1).trim();
+                     if (!name) continue;
+                     jarMap[name] = value;
+                 }
                  var now = Math.floor(Date.now() / 1000);
-                 var exp = now + 31536000; 
-                 var line = `${domain}\tTRUE\t/\tFALSE\t${exp}\t${name}\t${value}`;
-                 fs.appendFileSync('/tmp/legado_cookies.txt', line + '\n');
+                 var exp = now + 31536000;
+                 var lines = [];
+                 for (var key in jarMap) {
+                     lines.push(`${domain}\tTRUE\t/\tFALSE\t${exp}\t${key}\t${jarMap[key]}`);
+                 }
+                 var contentOut = lines.join('\n');
+                 if (contentOut) {
+                     contentOut += '\n';
+                 }
+                 var preserve = [];
+                 try {
+                     var priorContent = fs.readFileSync(ctx._cookie_file, 'utf8');
+                     var priorLines = priorContent.split('\n');
+                     for (var k = 0; k < priorLines.length; k++) {
+                         var priorLine = priorLines[k].trim();
+                         if (!priorLine || priorLine.startsWith('#')) {
+                             if (priorLines[k]) preserve.push(priorLines[k]);
+                             continue;
+                         }
+                         var priorCols = priorLine.split('\t');
+                         if (priorCols.length >= 7) {
+                             var priorDomain = priorCols[0];
+                             if (priorDomain === domain || priorDomain === '.' + domain || domain.endsWith(priorDomain)) {
+                                 continue;
+                             }
+                         }
+                         preserve.push(priorLines[k]);
+                     }
+                 } catch (e) {}
+                 if (preserve.length) {
+                     contentOut = preserve.join('\n') + '\n' + contentOut;
+                 }
+                 fs.writeFileSync(ctx._cookie_file, contentOut);
+                 if (ctx._cookies) {
+                     var merged = [];
+                     for (var cookieName in jarMap) {
+                         merged.push(cookieName + '=' + jarMap[cookieName]);
+                     }
+                     ctx._cookies[domain] = merged.join('; ');
+                 }
             } catch(e) {}
         },
         getKey: function(url, key) {
@@ -608,10 +1572,40 @@ function run(ctx) {
         getLoginInfo: function() { return ctx._source_vars && ctx._source_vars._login_info ? ctx._source_vars._login_info : "{}"; },
         getLoginInfoMap: function() {
             var info = ctx._source_vars && ctx._source_vars._login_info ? ctx._source_vars._login_info : "{}";
-            try { return JSON.parse(info); } catch(e) { return {}; }
+            try { return createHeadersWrapper(JSON.parse(info) || {}, true); } catch(e) { return createHeadersWrapper({}, true); }
         },
         putLoginInfo: function(info) { ctx._updates['login_info'] = info; },
-        getKey: function() { return ctx.source_data ? (ctx.source_data.bookSourceUrl || "") : ""; },
+        getLoginHeader: function() { return ctx._source_vars && ctx._source_vars._login_header ? ctx._source_vars._login_header : ""; },
+        putLoginHeader: function(header) {
+            var value = header == null ? "" : String(header);
+            ctx._updates['login_header'] = value;
+            ctx._source_vars._login_header = value;
+        },
+        removeLoginHeader: function() {
+            ctx._updates['login_header'] = "";
+            ctx._source_vars._login_header = "";
+        },
+        getHeaderMap: function(hasLoginHeader) {
+            var headers = {};
+            try {
+                if (ctx.source_data && ctx.source_data.header) {
+                    headers = JSON.parse(ctx.source_data.header) || {};
+                }
+            } catch (e) {}
+            if (hasLoginHeader) {
+                try {
+                    var loginHeader = source.getLoginHeader();
+                    if (loginHeader) {
+                        var loginMap = JSON.parse(loginHeader) || {};
+                        for (var name in loginMap) {
+                            headers[name] = loginMap[name];
+                        }
+                    }
+                } catch (e) {}
+            }
+            return createHeadersWrapper(headers, true);
+        },
+        getKey: function() { return ctx.source_data ? (ctx.source_data.bookSourceUrl || ctx.source_data.sourceUrl || "") : ""; },
         put: function(k, v) {
             var key = String(k);
             var val = v == null ? "" : String(v);
@@ -632,10 +1626,40 @@ function run(ctx) {
         source.getLoginInfo = function() { return ctx._source_vars && ctx._source_vars._login_info ? ctx._source_vars._login_info : "{}"; };
         source.getLoginInfoMap = function() {
             var info = ctx._source_vars && ctx._source_vars._login_info ? ctx._source_vars._login_info : "{}";
-            try { return JSON.parse(info); } catch(e) { return {}; }
+            try { return createHeadersWrapper(JSON.parse(info) || {}, true); } catch(e) { return createHeadersWrapper({}, true); }
         };
         source.putLoginInfo = function(info) { ctx._updates['login_info'] = info; };
-        source.getKey = function() { return ctx.source_data ? (ctx.source_data.bookSourceUrl || "") : ""; };
+        source.getLoginHeader = function() { return ctx._source_vars && ctx._source_vars._login_header ? ctx._source_vars._login_header : ""; };
+        source.putLoginHeader = function(header) {
+            var value = header == null ? "" : String(header);
+            ctx._updates['login_header'] = value;
+            ctx._source_vars._login_header = value;
+        };
+        source.removeLoginHeader = function() {
+            ctx._updates['login_header'] = "";
+            ctx._source_vars._login_header = "";
+        };
+        source.getHeaderMap = function(hasLoginHeader) {
+            var headers = {};
+            try {
+                if (ctx.source_data && ctx.source_data.header) {
+                    headers = JSON.parse(ctx.source_data.header) || {};
+                }
+            } catch (e) {}
+            if (hasLoginHeader) {
+                try {
+                    var loginHeader = source.getLoginHeader();
+                    if (loginHeader) {
+                        var loginMap = JSON.parse(loginHeader) || {};
+                        for (var name in loginMap) {
+                            headers[name] = loginMap[name];
+                        }
+                    }
+                } catch (e) {}
+            }
+            return createHeadersWrapper(headers, true);
+        };
+        source.getKey = function() { return ctx.source_data ? (ctx.source_data.bookSourceUrl || ctx.source_data.sourceUrl || "") : ""; };
         source.loginVariable = function() { return ""; };
         source.put = function(k, v) {
             var key = String(k);
@@ -655,10 +1679,36 @@ function run(ctx) {
     // ------------------------------------------------------------------
     
     var baseUrl = ctx.baseUrl;
-    var result = ctx.result;
+    var url = ctx.url;
+    var result = ctx.result && ctx.result._legado_type === 'StrResponse' ? wrapStrResponse(ctx.result) : unwrapBinary(ctx.result);
+    var cache = {
+        put: function(k, v) {
+            var key = String(k);
+            ctx._cache[key] = v;
+            ctx._cache_updates[key] = v;
+            return v;
+        },
+        get: function(k, defaultValue) {
+            var key = String(k);
+            if (Object.prototype.hasOwnProperty.call(ctx._cache, key)) return ctx._cache[key];
+            return defaultValue == null ? "" : defaultValue;
+        },
+        remove: function(k) {
+            var key = String(k);
+            delete ctx._cache[key];
+            ctx._cache_updates[key] = null;
+        },
+        contains: function(k) {
+            return Object.prototype.hasOwnProperty.call(ctx._cache, String(k));
+        },
+        clear: function() {
+            ctx._cache = {};
+            ctx._cache_cleared = true;
+            ctx._cache_updates = {};
+        }
+    };
     var book = ctx.book;
     if (book) {
-        logToFile("Injecting book methods for: " + (book.name || "unnamed"));
         book.getVariable = function(key) {
              try {
                  if (!this.variable) return null;
@@ -666,16 +1716,26 @@ function run(ctx) {
                  return obj[key];
              } catch(e) { return null; }
         };
-        book.setUseReplaceRule = function(val) {
-             // stub
-             logToFile("book.setUseReplaceRule called with " + val);
+        book.getVariableMap = function() {
+             try {
+                 return createHeadersWrapper(JSON.parse(this.variable || "{}") || {}, true);
+             } catch (e) {
+                 return createHeadersWrapper({}, true);
+             }
         };
-    } else {
-        logToFile("ctx.book is null/undefined");
+        book.getName = function() { return this.name || ""; };
+        book.getCoverUrl = function() { return this.coverUrl || ""; };
+        book.getTotalChapterNum = function() { return Number(this.totalChapterNum || 0); };
+        book.setUseReplaceRule = function(val) {
+             ctx._updates['book_use_replace_rule'] = !!val;
+        };
     }
     var page = ctx.page;
     var key = ctx.key;
     var chapter = ctx.chapter;
+    if (chapter) {
+        chapter.getIndex = function() { return Number(this.index || 0); };
+    }
     var title = ctx.title;
     var nextChapterUrl = ctx.nextChapterUrl;
     var rssArticle = ctx.rssArticle;
@@ -685,6 +1745,7 @@ function run(ctx) {
     root.cookie = cookie;
     root.source = source;
     root.baseUrl = baseUrl;
+    root.url = url;
     root.result = result;
     root.book = book;
     root.page = page;
@@ -693,7 +1754,34 @@ function run(ctx) {
     root.title = title;
     root.nextChapterUrl = nextChapterUrl;
     root.rssArticle = rssArticle;
-    root.cache = {};
+    root.cache = cache;
+    root.LegacyCrypto = legacyCrypto;
+    root.Crypto = legacyCrypto;
+    root.CryptoJS = root.CryptoJS || {
+        enc: {
+            Utf8: {
+                parse: function(text) { return bufferToWordArray(toCompatBuffer(text)); },
+                stringify: function(wordArray) { return wordArrayToBuffer(wordArray).toString('utf8'); }
+            },
+            Hex: {
+                parse: function(text) { return bufferToWordArray(toCompatBuffer(text, 'hex')); },
+                stringify: function(wordArray) { return wordArrayToBuffer(wordArray).toString('hex'); }
+            },
+            Base64: {
+                parse: function(text) { return bufferToWordArray(toCompatBuffer(text, 'base64')); },
+                stringify: function(wordArray) { return wordArrayToBuffer(wordArray).toString('base64'); }
+            }
+        },
+        MD5: function(message) { return bufferToWordArray(toCompatBuffer(legacyCrypto.MD5(message, { asBytes: true }))); },
+        SHA1: function(message) { return bufferToWordArray(toCompatBuffer(legacyCrypto.SHA1(message, { asBytes: true }))); },
+        SHA256: function(message) { return bufferToWordArray(toCompatBuffer(legacyCrypto.SHA256(message, { asBytes: true }))); },
+        HmacSHA1: function(message, key) {
+            return bufferToWordArray(toCompatBuffer(legacyCrypto.HMAC(legacyCrypto.SHA1, message, key, { asBytes: true })));
+        },
+        HmacSHA256: function(message, key) {
+            return bufferToWordArray(toCompatBuffer(legacyCrypto.HMAC(legacyCrypto.SHA256, message, key, { asBytes: true })));
+        }
+    };
     root.Packages = root.Packages || {};
     // ... other bindings injected by python loop ...
     
@@ -719,10 +1807,14 @@ function run(ctx) {
     try {
         var r = eval(ctx.code);
         return {
-            result: r,
+            result: wrapReturnValue(r),
             updates: ctx._updates,
             source_updates: ctx._source_updates,
-            events: ctx._events
+            events: ctx._events,
+            cache_updates: ctx._cache_updates,
+            cache_cleared: !!ctx._cache_cleared,
+            header_map: ctx._header_map,
+            text_cache: ctx._text_cache
         };
     } catch(e) {
         throw e;
@@ -733,6 +1825,11 @@ function run(ctx) {
 def _to_json_safe(obj: Any) -> Any:
     if obj is None:
         return None
+    if isinstance(obj, (bytes, bytearray)):
+        return {
+            "_legado_type": "ByteArray",
+            "base64": base64.b64encode(bytes(obj)).decode("ascii"),
+        }
     if hasattr(obj, "to_dict"):
         return obj.to_dict()
     import dataclasses
@@ -749,15 +1846,22 @@ def _run_execjs(js_str: str, ctx: Dict[str, Any]) -> Any:
     source_vars = {}
     src = ctx.get("source")
     if src:
-        if hasattr(src, "to_dict"):
+        cached_source_data = getattr(src, "_execjs_source_data_cache", None)
+        if isinstance(cached_source_data, dict):
+            source_data = cached_source_data
+        elif hasattr(src, "to_dict"):
             source_data = src.to_dict()
+            try:
+                setattr(src, "_execjs_source_data_cache", source_data)
+            except Exception:
+                pass
         if hasattr(src, "_variables"):
              source_vars = src._variables
     
+    engine = resolve_engine(ctx.get("engine"))
     _cookies = {}
     try:
-        from .utils.cookie_store import cookie_store
-        _cookies = cookie_store._cookies
+        _cookies = engine.cookie_store._store
     except Exception:
         pass
 
@@ -774,7 +1878,8 @@ def _run_execjs(js_str: str, ctx: Dict[str, Any]) -> Any:
     # Build the run context
     run_ctx = {
         "baseUrl": ctx.get("baseUrl"),
-        "result": ctx.get("result"),
+        "url": ctx.get("url"),
+        "result": _to_json_safe(ctx.get("result")),
         "book": _to_json_safe(ctx.get("book")),
         "chapter": _to_json_safe(ctx.get("chapter")),
         "title": ctx.get("title"),
@@ -787,6 +1892,21 @@ def _run_execjs(js_str: str, ctx: Dict[str, Any]) -> Any:
         "_source_cache": dict(vars_map),
         "_cookies": _cookies,
         "_vars": dict(vars_map),
+        "_cache": engine.cache.export(),
+        "_cache_updates": {},
+        "_cache_cleared": False,
+        "_text_cache": engine.export_text_cache(),
+        "_analysis_content": ctx.get("src", ctx.get("result")),
+        "_analysis_base_url": ctx.get("baseUrl"),
+        "_analysis_redirect_url": ctx.get("baseUrl"),
+        "_header_map": {
+            str(k): str(v)
+            for k, v in ((getattr(ctx.get("java"), "getHeaderMap", lambda: {})() or {}).items())
+        },
+        "_cookie_file": engine.cookie_jar_path,
+        "_device_id": str(getattr(engine, "device_id", "")),
+        "_android_id": str(getattr(engine, "android_id", getattr(engine, "device_id", ""))),
+        "_allow_browser_capture": bool(getattr(ctx.get("java"), "_allow_browser_capture", False)),
         "_updates": {},
         "_source_updates": {},
         "_events": {
@@ -824,15 +1944,16 @@ def _run_execjs(js_str: str, ctx: Dict[str, Any]) -> Any:
     run_ctx["code"] = "\n".join(var_decls) + "\n" + js_str
 
     try:
-        # Compile the wrapper
-        compiled = _JS_RUNTIME.compile(_EXECJS_WRAPPER)
+        compiled = getattr(_EXECJS_CONTEXT, "compiled_wrapper", None)
+        if compiled is None:
+            compiled = _JS_RUNTIME.compile(_EXECJS_WRAPPER)
+            _EXECJS_CONTEXT.compiled_wrapper = compiled
         # Call run
         raw_res = compiled.call("run", run_ctx)
         
         # Sync cookies back to store
         try:
-             from .utils.cookie_store import cookie_store
-             cookie_store.load_from_file('/tmp/legado_cookies.txt')
+             engine.cookie_store.load_from_file(engine.cookie_jar_path)
         except Exception:
              pass
 
@@ -840,19 +1961,44 @@ def _run_execjs(js_str: str, ctx: Dict[str, Any]) -> Any:
             updates = raw_res["updates"] or {}
             source_updates = raw_res.get("source_updates") or {}
             events = raw_res.get("events") or {}
+            cache_updates = raw_res.get("cache_updates") or {}
+            if raw_res.get("cache_cleared"):
+                engine.cache.clear()
+            for key, value in cache_updates.items():
+                if value is None:
+                    engine.cache.remove(key)
+                else:
+                    engine.cache.put(key, value)
+            if isinstance(raw_res.get("text_cache"), dict):
+                engine.replace_text_cache(raw_res.get("text_cache") or {})
             src = ctx.get("source")
             if src:
                 if "source_var" in updates:
                     src.setVariable(updates["source_var"])
                 if "login_info" in updates:
                     src.putLoginInfo(updates["login_info"])
+                if "login_header" in updates:
+                    if updates["login_header"]:
+                        src.putLoginHeader(updates["login_header"])
+                    else:
+                        src.removeLoginHeader()
                 for k, v in source_updates.items():
                     src.put(k, v)
             java = ctx.get("java")
             if java:
+                if isinstance(raw_res.get("header_map"), dict):
+                    header_map = getattr(java, "getHeaderMap", lambda: None)()
+                    if isinstance(header_map, dict):
+                        header_map.clear()
+                        header_map.update(
+                            {str(k): str(v) for k, v in (raw_res.get("header_map") or {}).items()}
+                        )
                 for k, v in updates.items():
                     if k not in ("source_var", "login_info"):
                         java.put(k, v)
+                book_obj = ctx.get("book")
+                if book_obj is not None and "book_use_replace_rule" in updates and hasattr(book_obj, "set_use_replace_rule"):
+                    book_obj.set_use_replace_rule(bool(updates["book_use_replace_rule"]))
                 if hasattr(java, "logs") and isinstance(events.get("logs"), list):
                     java.logs.extend(str(item) for item in events.get("logs") or [])
                 if hasattr(java, "toasts") and isinstance(events.get("toasts"), list):
@@ -864,5 +2010,8 @@ def _run_execjs(js_str: str, ctx: Dict[str, Any]) -> Any:
             return raw_res.get("result")
         return raw_res
     except Exception as e:
-        print(f"ExecJS Error: {e}")
-        return None
+        detail = str(e)
+        if "Unsupported headless operation:" in detail:
+            operation = detail.split("Unsupported headless operation:", 1)[1].strip()
+            raise UnsupportedHeadlessOperation(operation)
+        raise

@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from .engine import resolve_engine
 from .js_engine import JsExtensions, eval_js
 from .models.book_source import BookSource
 
@@ -58,6 +59,7 @@ class _SourceUiJsExtensions(JsExtensions):
         self.toasts: List[str] = []
         self.browser_url: Optional[str] = None
         self.browser_title: str = ""
+        self._allow_browser_capture = True
 
     def log(self, msg: str) -> None:
         self.logs.append(str(msg))
@@ -172,42 +174,46 @@ def _finalize_action_result(
 def submit_login_detailed(
     book_source: BookSource,
     form_data: Dict[str, str],
+    engine=None,
 ) -> SourceUiActionResult:
     if not book_source.loginUrl:
         raise ValueError("当前书源未定义 loginUrl。")
     book_source.putLoginInfo(json.dumps(form_data, ensure_ascii=False))
     login_js = f"{book_source.loginUrl}\nlogin(true);"
-    java = _SourceUiJsExtensions()
+    engine = resolve_engine(engine)
+    java = _SourceUiJsExtensions(engine=engine)
     raw_result = eval_js(
         login_js,
         result=form_data,
-        bindings={"source": book_source},
+        bindings={"source": book_source, "engine": engine},
         java_obj=java,
     )
     return _finalize_action_result(raw_result, java, "认证已提交。")
 
 
-def submit_login(book_source: BookSource, form_data: Dict[str, str]) -> None:
-    submit_login_detailed(book_source, form_data)
+def submit_login(book_source: BookSource, form_data: Dict[str, str], engine=None) -> None:
+    submit_login_detailed(book_source, form_data, engine=engine)
 
 
-def submit_source_form(book_source: BookSource, form_data: Dict[str, str]) -> None:
-    submit_login(book_source, form_data)
+def submit_source_form(book_source: BookSource, form_data: Dict[str, str], engine=None) -> None:
+    submit_login(book_source, form_data, engine=engine)
 
 
 def submit_source_form_detailed(
     book_source: BookSource,
     form_data: Dict[str, str],
+    engine=None,
 ) -> SourceUiActionResult:
-    return submit_login_detailed(book_source, form_data)
+    return submit_login_detailed(book_source, form_data, engine=engine)
 
 
 def run_login_button_action(
     book_source: BookSource,
     action: str,
     form_data: Dict[str, str],
+    engine=None,
 ) -> Optional[str]:
-    result = execute_login_button_action(book_source, action, form_data)
+    result = execute_login_button_action(book_source, action, form_data, engine=engine)
     if result.open_url:
         return "opened_url"
     return result.raw_result
@@ -217,6 +223,7 @@ def execute_login_button_action(
     book_source: BookSource,
     action: str,
     form_data: Dict[str, str],
+    engine=None,
 ) -> SourceUiActionResult:
     if not action:
         return SourceUiActionResult(message="未定义动作。")
@@ -230,11 +237,12 @@ def execute_login_button_action(
         raise ValueError("当前书源未定义 loginUrl。")
 
     login_js = f"{book_source.loginUrl}\n{action}"
-    java = _SourceUiJsExtensions()
+    engine = resolve_engine(engine)
+    java = _SourceUiJsExtensions(engine=engine)
     raw_result = eval_js(
         login_js,
         result=form_data,
-        bindings={"source": book_source},
+        bindings={"source": book_source, "engine": engine},
         java_obj=java,
     )
     return _finalize_action_result(raw_result, java, "操作完成。")
@@ -244,13 +252,15 @@ def run_source_ui_action(
     book_source: BookSource,
     action: str,
     form_data: Dict[str, str],
+    engine=None,
 ) -> Optional[str]:
-    return run_login_button_action(book_source, action, form_data)
+    return run_login_button_action(book_source, action, form_data, engine=engine)
 
 
 def execute_source_ui_action(
     book_source: BookSource,
     action: str,
     form_data: Dict[str, str],
+    engine=None,
 ) -> SourceUiActionResult:
-    return execute_login_button_action(book_source, action, form_data)
+    return execute_login_button_action(book_source, action, form_data, engine=engine)

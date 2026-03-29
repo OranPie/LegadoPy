@@ -10,11 +10,14 @@ import urllib.parse
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import requests as _requests
+from requests.utils import get_encoding_from_headers
 
 from .analyze.rule_analyzer import RuleAnalyzer
+from .engine import resolve_engine
+from .exceptions import UnsupportedHeadlessOperation
 from .js_engine import eval_js, JsExtensions
 from .utils.network_utils import get_absolute_url, get_base_url, get_sub_domain
-from .utils.cookie_store import cookie_store
+from .utils.cookie_store import CookieStore, cookie_store
 
 if TYPE_CHECKING:
     from .models.book_source import BaseSource
@@ -151,20 +154,32 @@ class StrResponse:
         self.status_code = status_code
         self.headers: Dict[str, str] = headers or {}
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "_legado_type": "StrResponse",
+            "url": self.url,
+            "bodyText": "" if self.body is None else str(self.body),
+            "statusCode": int(self.status_code),
+            "headersMap": {str(k): str(v) for k, v in self.headers.items()},
+        }
+
 
 class JsCookie:
     """Mirrors the 'cookie' object in JS context."""
+    def __init__(self, store: Optional[CookieStore] = None) -> None:
+        self._store = store or cookie_store
+
     def getCookie(self, url: str) -> str:  # noqa: N802
         domain = get_sub_domain(url)
-        return cookie_store.get_cookie(domain) or ""
+        return self._store.get_cookie(domain) or ""
 
     def setCookie(self, url: str, cookie: str) -> None:  # noqa: N802
         domain = get_sub_domain(url)
-        cookie_store.set_cookie(domain, cookie)
+        self._store.set_cookie(domain, cookie)
 
     def removeCookie(self, url: str) -> None:  # noqa: N802
         domain = get_sub_domain(url)
-        cookie_store.set_cookie(domain, "")
+        self._store.set_cookie(domain, "")
 
     def getKey(self, url: str, key: str) -> Optional[str]:  # noqa: N802
         """Return the value of a specific cookie key for the given URL's domain."""
@@ -198,7 +213,9 @@ class AnalyzeUrl:
         read_timeout: Optional[int] = None,
         call_timeout: Optional[int] = None,
         header_map_f: Optional[Dict[str, str]] = None,
+        engine=None,
     ) -> None:
+        self._engine = resolve_engine(engine)
         self._m_url = m_url
         self._key = key
         self._page = page
@@ -231,19 +248,25 @@ class AnalyzeUrl:
         self._retry: int = 0
         self._use_webview: bool = False
         self._web_js: Optional[str] = None
+        self.server_id: Optional[int] = None
+        self._enabled_cookie_jar: bool = source.enabledCookieJar is True if source is not None else True
 
         # Java/JS bindings
         self._java = JsExtensions(
             base_url=self._base_url,
             put_fn=lambda k, v: self._put(k, v),
             get_fn=lambda k: self._get(k),
+            source_getter=lambda: self._source,
+            header_map_getter=lambda: self.header_map,
+            response_fn=lambda: self.get_str_response(),
+            engine=self._engine,
         )
 
         # Merge source headers
         if header_map_f is not None:
             self.header_map.update(header_map_f)
         elif source is not None:
-            src_headers = source.get_header_map(True)
+            src_headers = source.get_header_map(True, engine=self._engine)
             self.header_map.update(src_headers)
             if "proxy" in self.header_map:
                 self._proxy = self.header_map.pop("proxy")
@@ -280,6 +303,7 @@ class AnalyzeUrl:
         bindings = {
             "java":        self._java,
             "baseUrl":     self._base_url,
+            "url":         self.url,
             "page":        self._page,
             "key":         self._key,
             "speakText":   self._speak_text,
@@ -287,7 +311,9 @@ class AnalyzeUrl:
             "book":        self._rule_data if isinstance(self._rule_data, Book) else None,
             "source":      self._source,
             "result":      result,
-            "cookie":      JsCookie(),
+            "cookie":      JsCookie(self._engine.cookie_store),
+            "cache":       self._engine.cache,
+            "engine":      self._engine,
         }
         return eval_js(js_str, result=result, bindings=bindings, java_obj=self._java)
 
@@ -377,6 +403,7 @@ class AnalyzeUrl:
                 self._retry = option.get_retry()
                 self._use_webview = option.use_webview()
                 self._web_js = option.get_webjs()
+                self.server_id = option.get_server_id()
                 js = option.get_js()
                 if js:
                     new_url = self.eval_js(js, self.url)
@@ -409,17 +436,39 @@ class AnalyzeUrl:
     # ------------------------------------------------------------------
 
     def _build_session(self) -> _requests.Session:
-        s = _requests.Session()
-        if self._proxy:
-            s.proxies = {"http": self._proxy, "https": self._proxy}
-        return s
+        return self._engine.get_http_session(self._proxy or "")
+
+    @staticmethod
+    def _guess_response_encoding(response: _requests.Response, body_bytes: bytes) -> str:
+        content_type = response.headers.get("Content-Type", "") or response.headers.get("content-type", "")
+        header_encoding = None
+        if "charset=" in content_type.lower():
+            header_encoding = get_encoding_from_headers(response.headers)
+        if header_encoding:
+            return header_encoding
+        sample = body_bytes[:4096]
+        lowered = sample.lower()
+        meta_patterns = (
+            rb'charset=["\']?\s*([a-z0-9._-]+)',
+            rb'encoding=["\']?\s*([a-z0-9._-]+)',
+        )
+        for pattern in meta_patterns:
+            match = re.search(pattern, lowered)
+            if match:
+                try:
+                    return match.group(1).decode("ascii", errors="ignore") or "utf-8"
+                except Exception:
+                    break
+        return "utf-8"
 
     def _set_cookie(self, headers: Dict[str, str]) -> None:
         """Inject stored cookies, mirrors setCookie()."""
-        stored = cookie_store.get_cookie(self._domain)
+        if not self._enabled_cookie_jar:
+            return
+        stored = self._engine.cookie_store.get_cookie(self._domain)
         if stored:
             existing = headers.get("Cookie") or headers.get("cookie", "")
-            merged = cookie_store.merge_cookies(stored, existing or None)
+            merged = self._engine.cookie_store.merge_cookies(stored, existing or None)
             if merged:
                 headers["Cookie"] = merged
 
@@ -428,6 +477,8 @@ class AnalyzeUrl:
         response: _requests.Response,
         session: Optional[_requests.Session] = None,
     ) -> None:
+        if not self._enabled_cookie_jar:
+            return
         combined: list[str] = []
 
         def collect_from_jar(jar: Any) -> None:
@@ -450,8 +501,11 @@ class AnalyzeUrl:
         }:
             if not domain:
                 continue
-            existing = cookie_store.get_cookie(domain)
-            cookie_store.set_cookie(domain, cookie_store.merge_cookies(existing, cookie_text))
+            existing = self._engine.cookie_store.get_cookie(domain)
+            self._engine.cookie_store.set_cookie(
+                domain,
+                self._engine.cookie_store.merge_cookies(existing, cookie_text),
+            )
 
     def is_post(self) -> bool:
         return self._method.upper() == "POST"
@@ -472,6 +526,11 @@ class AnalyzeUrl:
         Fetch URL and return StrResponse.
         Mirrors getStrResponse() (sync wrapper).
         """
+        if self._use_webview or use_webview or js_str or source_regex:
+            raise UnsupportedHeadlessOperation(
+                "webViewFetch",
+                self.url or self.rule_url or "source-defined request",
+            )
         # Handle data: URI
         if self.url.startswith("data:"):
             try:
@@ -508,71 +567,68 @@ class AnalyzeUrl:
         timeout = (self._call_timeout or 30000) / 1000.0
         last_exc: Optional[Exception] = None
 
-        for attempt in range(max(1, self._retry + 1)):
-            try:
-                sess = self._build_session()
-                if self._method == "POST":
-                    if self._encoded_form:
-                        # parse form fields into dict
-                        fields: Dict[str, str] = {}
-                        for part in self._encoded_form.split("&"):
-                            if "=" in part:
-                                k, _, v = part.partition("=")
-                                fields[urllib.parse.unquote_plus(k)] = urllib.parse.unquote_plus(v)
-                            elif part:
-                                fields[urllib.parse.unquote_plus(part)] = ""
-                        resp = sess.post(
-                            self._url_no_query, data=fields,
-                            headers=headers, timeout=timeout, allow_redirects=True
-                        )
-                    elif self._body:
-                        ct = headers.get("Content-Type", "")
-                        if ct:
+        with self._engine.acquire_rate_limit(self._source):
+            for attempt in range(max(1, self._retry + 1)):
+                try:
+                    sess = self._build_session()
+                    if self._method == "POST":
+                        if self._encoded_form:
+                            # parse form fields into dict
+                            fields: Dict[str, str] = {}
+                            for part in self._encoded_form.split("&"):
+                                if "=" in part:
+                                    k, _, v = part.partition("=")
+                                    fields[urllib.parse.unquote_plus(k)] = urllib.parse.unquote_plus(v)
+                                elif part:
+                                    fields[urllib.parse.unquote_plus(part)] = ""
                             resp = sess.post(
-                                self._url_no_query, data=self._body.encode(),
+                                self._url_no_query, data=fields,
                                 headers=headers, timeout=timeout, allow_redirects=True
                             )
+                        elif self._body:
+                            ct = headers.get("Content-Type", "")
+                            if ct:
+                                resp = sess.post(
+                                    self._url_no_query, data=self._body.encode(),
+                                    headers=headers, timeout=timeout, allow_redirects=True
+                                )
+                            else:
+                                resp = sess.post(
+                                    self._url_no_query, json=json.loads(self._body),
+                                    headers=headers, timeout=timeout, allow_redirects=True
+                                )
                         else:
                             resp = sess.post(
-                                self._url_no_query, json=json.loads(self._body),
-                                headers=headers, timeout=timeout, allow_redirects=True
+                                self._url_no_query, headers=headers,
+                                timeout=timeout, allow_redirects=True
                             )
                     else:
-                        resp = sess.post(
-                            self._url_no_query, headers=headers,
+                        if self._encoded_query:
+                            full_url = f"{self._url_no_query}?{self._encoded_query}"
+                        else:
+                            full_url = self.url
+                        resp = sess.get(
+                            full_url, headers=headers,
                             timeout=timeout, allow_redirects=True
                         )
-                else:
-                    params = None
-                    if self._encoded_query:
-                        # pass as raw query string
-                        full_url = f"{self._url_no_query}?{self._encoded_query}"
-                    else:
-                        full_url = self.url
-                    resp = sess.get(
-                        full_url, headers=headers,
-                        timeout=timeout, allow_redirects=True
+
+                    self._store_response_cookies(resp, sess)
+                    body_bytes = resp.content
+                    charset = self._charset or self._guess_response_encoding(resp, body_bytes)
+                    try:
+                        body = body_bytes.decode(charset, errors="replace")
+                    except Exception:
+                        body = body_bytes.decode("utf-8", errors="replace")
+                    return StrResponse(
+                        url=str(resp.url),
+                        body=body,
+                        status_code=resp.status_code,
+                        headers=dict(resp.headers),
                     )
-
-                # Detect encoding
-                charset = self._charset
-                if charset:
-                    resp.encoding = charset
-                else:
-                    resp.encoding = resp.apparent_encoding or "utf-8"
-
-                self._store_response_cookies(resp, sess)
-                body = resp.text
-                return StrResponse(
-                    url=str(resp.url),
-                    body=body,
-                    status_code=resp.status_code,
-                    headers=dict(resp.headers),
-                )
-            except Exception as e:
-                last_exc = e
-                if attempt < self._retry:
-                    time.sleep(0.5 * (attempt + 1))
+                except Exception as e:
+                    last_exc = e
+                    if attempt < self._retry:
+                        time.sleep(0.5 * (attempt + 1))
 
         raise last_exc or RuntimeError(f"Failed to fetch {self.url}")
 
@@ -586,12 +642,13 @@ class AnalyzeUrl:
                 return _b64.b64decode(m.group(1))
         headers = dict(self.header_map)
         self._set_cookie(headers)
-        resp = self._build_session().get(
-            self.url, headers=headers,
-            timeout=(self._call_timeout or 30000) / 1000.0
-        )
-        self._store_response_cookies(resp)
-        return resp.content
+        with self._engine.acquire_rate_limit(self._source):
+            resp = self._build_session().get(
+                self.url, headers=headers,
+                timeout=(self._call_timeout or 30000) / 1000.0
+            )
+            self._store_response_cookies(resp)
+            return resp.content
 
     def put(self, key: str, value: str) -> str:
         self._put(key, value)

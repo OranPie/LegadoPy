@@ -18,6 +18,7 @@ from .analyze_by_jsonpath import AnalyzeByJSonPath
 from .analyze_by_jsoup import AnalyzeByJSoup
 from .analyze_by_xpath import AnalyzeByXPath
 from .analyze_by_regex import AnalyzeByRegex
+from ..engine import resolve_engine
 from ..js_engine import eval_js, JsExtensions
 from ..utils.network_utils import get_absolute_url, get_base_url, is_json
 
@@ -307,7 +308,9 @@ class _AnalyzeRuleP2:
         rule_data: "Optional[RuleData]" = None,
         source: "Optional[BaseSource]" = None,
         pre_update_js: bool = False,
+        engine=None,
     ) -> None:
+        self._engine = resolve_engine(engine)
         self._rule_data = rule_data
         self._source = source
         self._pre_update_js = pre_update_js
@@ -326,7 +329,7 @@ class _AnalyzeRuleP2:
         self._by_json: Optional[AnalyzeByJSonPath] = None
 
         # caches
-        self._rule_cache: Dict[str, List[SourceRule]] = {}
+        self._rule_cache: Dict[tuple[str, bool], List[SourceRule]] = {}
         self._regex_cache: Dict[str, Optional[re.Pattern]] = {}
 
         # JS bindings
@@ -334,6 +337,7 @@ class _AnalyzeRuleP2:
             base_url=self._base_url or "",
             put_fn=lambda k, v: self.put(k, v),
             get_fn=lambda k: self.get(k),
+            engine=self._engine,
         )
 
     # ------------------------------------------------------------------
@@ -454,12 +458,17 @@ class _AnalyzeRuleP2:
                                             is_regex_ctx=self._is_regex))
         return rule_list
 
-    def _split_source_rule_cached(self, rule_str: Optional[str]) -> List[SourceRule]:
+    def _split_source_rule_cached(
+        self,
+        rule_str: Optional[str],
+        all_in_one: bool = False,
+    ) -> List[SourceRule]:
         if not rule_str:
             return []
-        if rule_str not in self._rule_cache:
-            self._rule_cache[rule_str] = self.split_source_rule(rule_str)
-        return self._rule_cache[rule_str]
+        cache_key = (rule_str, bool(all_in_one))
+        if cache_key not in self._rule_cache:
+            self._rule_cache[cache_key] = self.split_source_rule(rule_str, all_in_one=all_in_one)
+        return self._rule_cache[cache_key]
 
     # Kotlin-style camelCase aliases
     def splitSourceRule(self, rule_str: Optional[str],  # noqa: N802
@@ -516,10 +525,11 @@ class AnalyzeRule(_AnalyzeRuleP2):
     def eval_js(self, js_str: str, result: Any = None) -> Any:
         """Mirrors AnalyzeRule.evalJS()."""
         from ..models.book import Book, BookChapter
+        from ..analyze_url import JsCookie
         bindings = {
             "java":           self._java,
-            "cookie":         {},
-            "cache":          {},
+            "cookie":         JsCookie(self._engine.cookie_store),
+            "cache":          self._engine.cache,
             "source":         self._source,
             "book":           self._rule_data if isinstance(self._rule_data, Book) else None,
             "result":         result,
@@ -528,6 +538,7 @@ class AnalyzeRule(_AnalyzeRuleP2):
             "title":          self._chapter.title if self._chapter else None,
             "src":            self._content,
             "nextChapterUrl": self._next_chapter_url,
+            "engine":         self._engine,
         }
         return eval_js(js_str, result=result, bindings=bindings, java_obj=self._java)
 
@@ -733,7 +744,7 @@ class AnalyzeRule(_AnalyzeRuleP2):
         """Mirrors getElement()."""
         if not rule_str:
             return None
-        rule_list = self.split_source_rule(rule_str, all_in_one=True)
+        rule_list = self._split_source_rule_cached(rule_str, all_in_one=True)
         result: Any = self._content
         for sr in rule_list:
             if result is None:
@@ -747,7 +758,7 @@ class AnalyzeRule(_AnalyzeRuleP2):
         """Mirrors getElements()."""
         if not rule_str:
             return []
-        rule_list = self.split_source_rule(rule_str, all_in_one=True)
+        rule_list = self._split_source_rule_cached(rule_str, all_in_one=True)
         result: Any = self._content
         for sr in rule_list:
             if result is None:

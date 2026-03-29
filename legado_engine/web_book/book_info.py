@@ -4,7 +4,9 @@ BookInfo – 1:1 port of BookInfo.kt.
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+from ..engine import resolve_engine
 from ..analyze.analyze_rule import AnalyzeRule
+from ..debug import snapshot_book, snapshot_source, trace_event
 from ..utils.html_formatter import format_book_name, format_book_author, format_html
 from ..utils.network_utils import get_absolute_url
 
@@ -21,11 +23,13 @@ def analyze_book_info(
     base_url: str,
     redirect_url: str,
     can_rename: bool,
+    engine=None,
 ) -> None:
     """
     Mirrors BookInfo.analyzeBookInfo() (inner form).
     Fills all fields of `book` in place using book_source.ruleBookInfo rules.
     """
+    engine = resolve_engine(engine)
     info_rule = book_source.get_book_info_rule()
 
     # init rule (pre-processing step)
@@ -39,7 +43,7 @@ def analyze_book_info(
     # name
     name = format_book_name(analyze_rule.get_string(info_rule.name) or "")
     if name and (m_can_rename or not book.name):
-        book.name = name
+        book.name = engine.apply_title(name, source=book_source, book=book)
 
     # author
     author = format_book_author(analyze_rule.get_string(info_rule.author) or "")
@@ -59,7 +63,7 @@ def analyze_book_info(
     # latest chapter
     lc = analyze_rule.get_string(info_rule.lastChapter)
     if lc:
-        book.latestChapterTitle = lc
+        book.latestChapterTitle = engine.apply_title(lc, source=book_source, book=book)
 
     # intro
     intro_raw = analyze_rule.get_string(info_rule.intro)
@@ -82,3 +86,20 @@ def analyze_book_info(
         if not dl_urls:
             raise ValueError("Download URLs empty")
         book.downloadUrls = dl_urls
+
+    trace_event(
+        "book_info.analyze.complete",
+        source=snapshot_source(book_source),
+        extracted={
+            "name": name,
+            "author": author,
+            "kind_list": kind_list,
+            "word_count": wc,
+            "latest_chapter": lc,
+            "intro_len": len(book.intro or ""),
+            "cover_url": book.coverUrl,
+            "toc_url": book.tocUrl,
+            "download_urls": book.downloadUrls,
+        },
+        book=snapshot_book(book),
+    )

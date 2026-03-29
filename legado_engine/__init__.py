@@ -17,11 +17,18 @@ from .models.book_source import (
     ReviewRule,
     to_book_source_parts,
 )
+from .models.replace_rule import ReplaceRule
+from .models.rss_source import RssSource, RssArticle
+from .models.review import ReviewEntry
 from .models.book import Book, BookChapter, SearchBook, RuleData
+from .engine import CacheStore, LegadoEngine, get_default_engine, resolve_engine
+from .debug import configure_trace_logging, trace_enabled, trace_event, trace_exception
+from .exceptions import LegadoEngineError, UnsupportedHeadlessOperation
 from .analyze.analyze_rule import AnalyzeRule, SourceRule, Mode
 from .analyze_url import AnalyzeUrl, StrResponse
 from .web_book import (
     search_book,
+    search_books_parallel,
     explore_book,
     get_book_info,
     get_chapter_list,
@@ -29,6 +36,15 @@ from .web_book import (
 )
 from .js_engine import eval_js
 from .source_explore import get_explore_kinds, get_explore_kinds_json
+from .rss import load_rss_sources, get_rss_articles, get_rss_article_content
+from .review import get_reviews
+from .image import (
+    decode_image_bytes,
+    fetch_image_bytes,
+    fetch_book_cover_bytes,
+    fetch_content_image_bytes,
+    fetch_rss_image_bytes,
+)
 from .source_login import (
     UiRow,
     LoginRow,
@@ -54,6 +70,10 @@ __all__ = [
     "BookSourcePart",
     "SearchRule",
     "ExploreRule",
+    "ReplaceRule",
+    "RssSource",
+    "RssArticle",
+    "ReviewEntry",
     "ExploreKind",
     "BookInfoRule",
     "TocRule",
@@ -64,6 +84,16 @@ __all__ = [
     "BookChapter",
     "SearchBook",
     "RuleData",
+    "CacheStore",
+    "LegadoEngine",
+    "get_default_engine",
+    "resolve_engine",
+    "configure_trace_logging",
+    "trace_enabled",
+    "trace_event",
+    "trace_exception",
+    "LegadoEngineError",
+    "UnsupportedHeadlessOperation",
     # Analyze core
     "AnalyzeRule",
     "SourceRule",
@@ -72,12 +102,22 @@ __all__ = [
     "StrResponse",
     # High-level API
     "search_book",
+    "search_books_parallel",
     "explore_book",
     "get_book_info",
     "get_chapter_list",
     "get_content",
     "get_explore_kinds",
     "get_explore_kinds_json",
+    "load_rss_sources",
+    "get_rss_articles",
+    "get_rss_article_content",
+    "get_reviews",
+    "decode_image_bytes",
+    "fetch_image_bytes",
+    "fetch_book_cover_bytes",
+    "fetch_content_image_bytes",
+    "fetch_rss_image_bytes",
     "UiRow",
     "LoginRow",
     "SourceUiActionResult",

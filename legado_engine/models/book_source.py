@@ -137,7 +137,7 @@ class BaseSource:
     def getTag(self) -> str:  # noqa: N802
         return self.get_tag()
 
-    def get_header_map(self, has_login_header: bool = True) -> Dict[str, str]:
+    def get_header_map(self, has_login_header: bool = True, engine=None) -> Dict[str, str]:
         headers: Dict[str, str] = {}
         if self.header:
             try:
@@ -147,16 +147,16 @@ class BaseSource:
                         from ..js_engine import eval_js, JsExtensions
                         header_text = str(eval_js(
                             header_text[4:],
-                            bindings={"source": self},
-                            java_obj=JsExtensions(),
+                            bindings={"source": self, "engine": engine},
+                            java_obj=JsExtensions(engine=engine),
                         ) or "")
                     elif header_text.lower().startswith("<js>") and "</js>" in header_text.lower():
                         from ..js_engine import eval_js, JsExtensions
                         end = header_text.lower().rfind("</js>")
                         header_text = str(eval_js(
                             header_text[4:end],
-                            bindings={"source": self},
-                            java_obj=JsExtensions(),
+                            bindings={"source": self, "engine": engine},
+                            java_obj=JsExtensions(engine=engine),
                         ) or "")
                 h = json.loads(header_text)
                 if isinstance(h, dict):
@@ -187,7 +187,7 @@ class BaseSource:
             return login_js[4:login_js.rfind("</js>")]
         return login_js
 
-    def login(self) -> Any:
+    def login(self, engine=None) -> Any:
         login_js = self.get_login_js()
         if not login_js:
             return None
@@ -200,7 +200,7 @@ class BaseSource:
             "  throw('Function login not implements!!!');\n"
             "}\n"
         )
-        return eval_js(js, bindings={"source": self}, java_obj=JsExtensions())
+        return eval_js(js, bindings={"source": self, "engine": engine}, java_obj=JsExtensions(engine=engine))
 
     def getLoginJs(self) -> Optional[str]:  # noqa: N802
         return self.get_login_js()

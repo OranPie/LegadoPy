@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..debug import snapshot_book, trace_event
+
 
 @dataclass
 class RuleData:
@@ -39,6 +41,16 @@ class RuleData:
             self._var_map = {}
         self._sync_variable_blob()
 
+    def load_variable_map(self, values: Optional[Dict[str, Any]]) -> None:
+        if values:
+            self._var_map = {
+                str(key): "" if value is None else str(value)
+                for key, value in values.items()
+            }
+        else:
+            self._var_map = {}
+        self._sync_variable_blob()
+
     def putVariable(self, key: str, value: Optional[str]) -> bool:  # noqa: N802
         self.put_variable(key, value)
         return True
@@ -59,20 +71,20 @@ class Book(RuleData):
     originOrder: int = 0
     name: str = ""
     author: str = ""
-    kind: Optional[str] = None
-    intro: Optional[str] = None
-    wordCount: Optional[str] = None
-    coverUrl: Optional[str] = None
+    kind: str = ""
+    intro: str = ""
+    wordCount: str = ""
+    coverUrl: str = ""
     tocUrl: str = ""
     tocHtml: Optional[str] = None
     infoHtml: Optional[str] = None
-    latestChapterTitle: Optional[str] = None
+    latestChapterTitle: str = ""
     latestChapterTime: int = 0
     lastCheckTime: int = 0
     lastCheckCount: int = 0
     order: int = 0
     durChapterIndex: int = 0
-    durChapterTitle: Optional[str] = None
+    durChapterTitle: str = ""
     totalChapterNum: int = 0
     type: int = 0               # BookSourceType
     readConfig: Optional[Dict[str, Any]] = None
@@ -87,8 +99,11 @@ class Book(RuleData):
     def get_use_replace_rule(self) -> bool:
         return self._use_replace_rule
 
+    def set_use_replace_rule(self, value: bool) -> None:
+        self._use_replace_rule = bool(value)
+
     def to_search_book(self) -> "SearchBook":
-        return SearchBook(
+        result = SearchBook(
             bookUrl=self.bookUrl,
             origin=self.origin,
             originName=self.originName,
@@ -106,6 +121,8 @@ class Book(RuleData):
             infoHtml=self.infoHtml,
             tocHtml=self.tocHtml,
         )
+        trace_event("book.to_search_book", book=snapshot_book(self), search_book=snapshot_book(result))
+        return result
 
     @property
     def is_web_file(self) -> bool:
@@ -128,6 +145,14 @@ class BookChapter(RuleData):
     titleMD5: Optional[str] = None
 
     def get_display_title(self, replace_rules=None, use_replace=True) -> str:
+        if not use_replace:
+            return self.title
+        if replace_rules:
+            result = self.title
+            for rule in replace_rules:
+                if getattr(rule, "applies_to", None) and rule.applies_to([], is_title=True, is_content=False):
+                    result = rule.apply(result)
+            return result
         return self.title
 
     def get_file_name(self) -> str:
@@ -145,11 +170,11 @@ class SearchBook(RuleData):
     type: int = 0
     name: str = ""
     author: str = ""
-    kind: Optional[str] = None
-    intro: Optional[str] = None
-    wordCount: Optional[str] = None
-    coverUrl: Optional[str] = None
-    latestChapterTitle: Optional[str] = None
+    kind: str = ""
+    intro: str = ""
+    wordCount: str = ""
+    coverUrl: str = ""
+    latestChapterTitle: str = ""
     tocUrl: str = ""
     infoHtml: Optional[str] = None
     tocHtml: Optional[str] = None

@@ -9,6 +9,7 @@ Commands:
   content   Fetch chapter content
   explore   Browse explore/discovery pages
   categories List discover/category buttons from a source
+  auth      Inspect or submit source login/auth forms
   sources   List / validate book sources from a JSON array file
 
 Usage examples:
@@ -18,6 +19,9 @@ Usage examples:
   python cli.py content  source.json "https://chapter.url"
   python cli.py explore    source.json "https://explore.url"
   python cli.py categories source.json
+  python cli.py auth source.json
+  python cli.py auth source.json --field 用户名=demo --field 密码=secret
+  python cli.py auth source.json --action "register()"
   python cli.py sources    sources_array.json
 """
 from __future__ import annotations
@@ -45,6 +49,13 @@ from legado_engine import (
     search_book, get_book_info, get_chapter_list, get_content, explore_book,
     get_explore_kinds,
 )
+from legado_engine.source_login import (
+    SourceUiActionResult,
+    execute_source_ui_action,
+    get_source_form_data,
+    parse_source_ui,
+    submit_source_form_detailed,
+)
 
 console = Console()
 
@@ -70,6 +81,24 @@ def spinner(msg: str):
         transient=True,
         console=console,
     )
+
+
+def parse_kv_fields(items: List[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"Expected KEY=VALUE field, got: {item}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"Field name cannot be empty: {item}")
+        values[key] = value
+    return values
+
+
+def print_auth_result(outcome: SourceUiActionResult) -> None:
+    detail = outcome.detail_text() or outcome.message or "No auth output."
+    console.print(Panel(detail, title="Source Auth", border_style="cyan"))
 
 
 # ─── commands ────────────────────────────────────────────────────────────────
@@ -248,6 +277,67 @@ def cmd_categories(args):
     console.print(t)
 
 
+def cmd_auth(args):
+    src = load_source(args.source)
+    console.print(f"[bold]Source:[/bold] {src.bookSourceName}  [dim]{src.bookSourceUrl}[/dim]")
+    if not (src.loginUi or src.loginUrl):
+        console.print("[yellow]This source has no login/auth UI.[/yellow]")
+        return
+
+    if args.clear_header:
+        src.removeLoginHeader()
+        console.print("[green]Saved login header cleared.[/green]")
+        return
+
+    if args.show_header:
+        header = src.getLoginHeader().strip()
+        console.print(Panel(header or "No saved login header.", title="Login Header", border_style="cyan"))
+        return
+
+    form_data = get_source_form_data(src)
+    form_data.update(parse_kv_fields(args.field or []))
+
+    if args.action:
+        with spinner(f"Running auth action {args.action!r}…"):
+            outcome = execute_source_ui_action(src, args.action, form_data)
+        print_auth_result(outcome)
+        return
+
+    if args.field:
+        with spinner("Submitting source authentication…"):
+            outcome = submit_source_form_detailed(src, form_data)
+        print_auth_result(outcome)
+        return
+
+    rows = parse_source_ui(src)
+    schema_table = Table(title=f"Auth Schema: {src.bookSourceName}", box=box.ROUNDED)
+    schema_table.add_column("#", style="dim", width=3)
+    schema_table.add_column("Name", style="bold green", min_width=16)
+    schema_table.add_column("Type", style="cyan", width=10)
+    schema_table.add_column("Action", style="blue", overflow="fold")
+    for i, row in enumerate(rows, 1):
+        schema_table.add_row(str(i), row.name or "", row.type or "", row.action or "")
+    if rows:
+        console.print(schema_table)
+    else:
+        console.print("[yellow]No structured rows were defined. This source may still rely on loginUrl fallback fields.[/yellow]")
+
+    saved_form = json.dumps(form_data, ensure_ascii=False, indent=2)
+    console.print(Panel(saved_form, title="Saved Form Data", border_style="green"))
+    console.print(Panel(
+        "\n".join(
+            [
+                f"loginUi: {'yes' if src.loginUi else 'no'}",
+                f"loginUrl: {'yes' if src.loginUrl else 'no'}",
+                f"saved_header: {'yes' if src.getLoginHeader().strip() else 'no'}",
+                f"saved_fields: {len(src.getLoginInfoMap())}",
+            ]
+        ),
+        title="Auth Status",
+        border_style="magenta",
+    ))
+
+
 def cmd_sources(args):
     raw = Path(args.file).read_text(encoding="utf-8")
     data = json.loads(raw)
@@ -322,6 +412,20 @@ def build_parser() -> argparse.ArgumentParser:
     pcat = sub.add_parser("categories", help="List discover/category buttons")
     pcat.add_argument("source", help="Path to BookSource JSON file")
 
+    # auth / login
+    pauth = sub.add_parser("auth", aliases=["login"], help="Inspect or submit source login/auth data")
+    pauth.add_argument("source", help="Path to BookSource JSON file")
+    pauth.add_argument(
+        "--field",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Provide or override a form field; may be repeated",
+    )
+    pauth.add_argument("--action", default=None, help="Run a source-defined auth button action")
+    pauth.add_argument("--show-header", action="store_true", help="Show the saved login header")
+    pauth.add_argument("--clear-header", action="store_true", help="Clear the saved login header")
+
     # sources
     psr = sub.add_parser("sources", help="List sources from a JSON array file")
     psr.add_argument("file", help="Path to sources JSON array file")
@@ -339,6 +443,8 @@ def main():
         "content":  cmd_content,
         "explore":    cmd_explore,
         "categories": cmd_categories,
+        "auth":       cmd_auth,
+        "login":      cmd_auth,
         "sources":    cmd_sources,
     }
     try:
