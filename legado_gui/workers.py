@@ -19,13 +19,20 @@ class Worker(QRunnable):
     """
     Generic worker: runs ``fn()`` on the thread pool and emits
     ``signals.result`` or ``signals.error`` back on the main thread.
+
+    ``setAutoDelete(False)`` so that Qt's thread pool does NOT free the C++
+    object after run().  The caller must keep a Python reference alive until
+    the result/error signal has been delivered, otherwise the ``_Signals``
+    QObject is destroyed before Qt dispatches the queued signal → segfault.
+    Use ``Worker.keep(worker)`` / ``Worker.release(worker)`` or the
+    ``LegadoApp._active_workers`` set for lifetime management.
     """
 
     def __init__(self, fn: Callable[[], Any]) -> None:
         super().__init__()
         self._fn = fn
         self.signals = _Signals()
-        self.setAutoDelete(True)
+        self.setAutoDelete(False)  # Python owns the lifetime
 
     def run(self) -> None:
         try:

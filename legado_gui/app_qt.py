@@ -222,6 +222,7 @@ class AuthPanel(QWidget):
         self._field_widgets: Dict[str, QLineEdit] = {}
         self._action_rows: List[UiRow] = []
         self._last_open_url: Optional[str] = None
+        self._active_workers: set = set()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -321,8 +322,11 @@ class AuthPanel(QWidget):
     def _submit(self) -> None:
         self.status_changed.emit("Submitting source authentication…")
         worker = Worker(lambda: self._controller.submit_source_auth(self._form_data()))
+        self._active_workers.add(worker)
         worker.signals.result.connect(self._apply_result)
+        worker.signals.result.connect(lambda _: self._active_workers.discard(worker))
         worker.signals.error.connect(lambda msg, _: self.status_changed.emit(f"Auth failed: {msg}"))
+        worker.signals.error.connect(lambda *_: self._active_workers.discard(worker))
         QThreadPool.globalInstance().start(worker)
 
     @Slot()
@@ -337,8 +341,11 @@ class AuthPanel(QWidget):
         worker = Worker(
             lambda: self._controller.run_source_auth_action(row.action or "", self._form_data())
         )
+        self._active_workers.add(worker)
         worker.signals.result.connect(self._apply_result)
+        worker.signals.result.connect(lambda _: self._active_workers.discard(worker))
         worker.signals.error.connect(lambda msg, _: self.status_changed.emit(f"Action failed: {msg}"))
+        worker.signals.error.connect(lambda *_: self._active_workers.discard(worker))
         QThreadPool.globalInstance().start(worker)
 
     @Slot(object)
@@ -857,6 +864,10 @@ class LegadoApp(QMainWindow):
         self._reader_font_size = 15
         self._reader_css: str = _READER_CSS_DARK
         self._last_chapter_text: str = ""
+        # Keep strong Python references to in-flight Worker objects so their
+        # _Signals QObject is not GC'd before the queued cross-thread signal
+        # reaches the main thread (GC before delivery → segfault).
+        self._active_workers: set = set()
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setInterval(800)
         self._scroll_timer.setSingleShot(True)
@@ -1164,8 +1175,11 @@ class LegadoApp(QMainWindow):
     def _resume_bookshelf_entry(self, key: str) -> None:
         self._set_status("Loading book…")
         worker = Worker(lambda: self._controller.open_bookshelf_entry(key))
+        self._active_workers.add(worker)
         worker.signals.result.connect(self._after_book_loaded_for_resume)
+        worker.signals.result.connect(lambda _: self._active_workers.discard(worker))
         worker.signals.error.connect(self._on_task_error)
+        worker.signals.error.connect(lambda *_: self._active_workers.discard(worker))
         QThreadPool.globalInstance().start(worker)
 
     @Slot(object)
@@ -1329,9 +1343,19 @@ class LegadoApp(QMainWindow):
     def _run_task(self, status: str, fn, on_success) -> None:
         self._set_status(status)
         worker = Worker(fn)
+        self._active_workers.add(worker)
         worker.signals.result.connect(on_success)
+        worker.signals.result.connect(lambda _: self._active_workers.discard(worker))
         worker.signals.error.connect(self._on_task_error)
+        worker.signals.error.connect(lambda *_: self._active_workers.discard(worker))
         QThreadPool.globalInstance().start(worker)
+
+    def closeEvent(self, event) -> None:
+        # Give in-flight workers up to 2 s to finish so their _Signals objects
+        # aren't destroyed mid-emission (would segfault on the worker thread).
+        QThreadPool.globalInstance().waitForDone(2000)
+        self._active_workers.clear()
+        super().closeEvent(event)
 
     @Slot(str, object)
     def _on_task_error(self, message: str, exc: object) -> None:
