@@ -1421,7 +1421,7 @@ class BookshelfScreen(Screen):
         self.app.set_source(source)
         self._update_source_label()
         self.app.push_screen(
-            ChapterListScreen(
+            BookScreen(
                 book=book,
                 source=source,
                 resume_progress=entry.get("progress") or None,
@@ -1632,7 +1632,7 @@ class SearchScreen(Screen):
                 book.author = self.results[idx].author
                 book.origin = self.source.bookSourceUrl
                 book.infoHtml = getattr(self.results[idx], "infoHtml", None)
-            self.app.push_screen(BookInfoScreen(book=book, source=self.source))
+            self.app.push_screen(BookScreen(book=book, source=self.source))
 
 
 class ExploreKindsScreen(Screen):
@@ -1855,7 +1855,7 @@ class ExploreResultsScreen(Screen):
                 book.author = result.author
                 book.origin = self._source.bookSourceUrl
                 book.infoHtml = getattr(result, "infoHtml", None)
-            self.app.push_screen(BookInfoScreen(book=book, source=self._source))
+            self.app.push_screen(BookScreen(book=book, source=self._source))
 
 
 
@@ -2199,6 +2199,296 @@ class ChapterListScreen(Screen):
             )
         )
 
+
+class BookScreen(Screen):
+    """Combined book info + chapter list in a two-column layout."""
+
+    BINDINGS = [
+        Binding("escape", "app.pop_screen",       "返回"),
+        Binding("b",      "open_bookshelf",       "书架"),
+        Binding("t",      "open_reader_settings", "设置"),
+        Binding("r",      "reload",               "刷新"),
+        Binding("/",      "focus_filter",         "筛选章节"),
+        Binding("j",      "jump_to_chapter",      "跳转"),
+        Binding("g",      "goto_last_read",       "继续阅读"),
+        Binding("f",      "save_to_shelf",        "收藏"),
+    ]
+
+    def __init__(
+        self,
+        book: Book,
+        source: BookSource,
+        resume_progress: Optional[Dict[str, Any]] = None,
+        auto_open: bool = False,
+    ) -> None:
+        super().__init__()
+        self._book = book
+        self._source = source
+        self._chapters: List[BookChapter] = []
+        self._filtered: List[BookChapter] = []
+        self._resume_progress = resume_progress or {}
+        self._auto_open = auto_open
+        self._auto_opened = False
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal(id="book-screen-body"):
+            # Left column: book info
+            with Vertical(id="book-info-col"):
+                yield LoadingIndicator(id="info-loading")
+                yield ScrollableContainer(
+                    Static("", id="info-content"),
+                    id="info-scroll",
+                )
+                with Horizontal(id="info-actions"):
+                    yield Button("⭐ 收藏", id="btn-save-shelf")
+                    yield Button("继续阅读", variant="primary", id="btn-resume")
+                    yield Button("← 返回", id="btn-back")
+            # Right column: chapter list
+            with Vertical(id="book-chapter-col"):
+                with Horizontal(id="chapters-top"):
+                    yield Input(placeholder="🔍 筛选章节…", id="chapter-filter")
+                    yield Button("跳转", id="btn-ch-jump")
+                    yield Label("", id="chapter-count")
+                yield LoadingIndicator(id="ch-loading")
+                yield DataTable(id="ch-table", cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.sub_title = self._book.name or "书籍详情"
+        self.query_one("#info-loading").display = True
+        self.query_one("#ch-loading").display = True
+        tbl: DataTable = self.query_one("#ch-table", DataTable)
+        tbl.add_columns("#", "章节", "VIP", "URL")
+        self._load_info()
+        self._load_chapters()
+
+    def action_reload(self) -> None:
+        self._book.tocUrl = ""
+        self._book.infoHtml = None
+        self._book.tocHtml = None
+        self.query_one("#info-loading").display = True
+        self.query_one("#ch-loading").display = True
+        self._load_info()
+        self._load_chapters()
+
+    def action_focus_filter(self) -> None:
+        self.query_one("#chapter-filter", Input).focus()
+
+    def action_open_bookshelf(self) -> None:
+        self.app.open_bookshelf()
+
+    def action_open_reader_settings(self) -> None:
+        self.app.open_reader_settings()
+
+    def action_save_to_shelf(self) -> None:
+        self.app.reader_state.remember_book(self._source, self._book)
+        self.app.info("⭐ 已加入书架。")
+
+    def action_jump_to_chapter(self) -> None:
+        self.app.push_screen(
+            TextPromptScreen(
+                "跳转到章节",
+                placeholder=f"输入章节号 (1-{len(self._chapters)})",
+            ),
+            self._on_jump_to_chapter,
+        )
+
+    def _on_jump_to_chapter(self, value: Optional[str]) -> None:
+        if value is None or not value.strip():
+            return
+        try:
+            num = int(value.strip())
+        except ValueError:
+            self.app.warn("请输入有效的章节数字。")
+            return
+        idx = num - 1
+        ch = next((c for c in self._chapters if c.index == idx), None)
+        if ch is None:
+            self.app.warn(f"章节 {num} 不存在。")
+            return
+        self._open_reader(ch)
+
+    def action_goto_last_read(self) -> None:
+        if not self._chapters:
+            return
+        progress = self._resume_progress
+        target = None
+        chapter_url = progress.get("chapter_url")
+        chapter_index = progress.get("chapter_index")
+        if chapter_url:
+            target = next((c for c in self._chapters if c.url == chapter_url), None)
+        if target is None and chapter_index is not None:
+            target = next((c for c in self._chapters if c.index == chapter_index), None)
+        if target:
+            self._open_reader(target)
+        else:
+            self.app.info("没有找到上次阅读位置。")
+
+    @work(thread=True)
+    def _load_info(self) -> None:
+        try:
+            book = get_book_info(self._source, self._book, can_rename=True)
+            self._book = book
+        except Exception as e:
+            self.app.call_from_thread(self.app.error, f"书籍详情加载失败：{e}")
+        finally:
+            self.app.call_from_thread(self._render_info)
+
+    def _render_info(self) -> None:
+        self.query_one("#info-loading").display = False
+        b = self._book
+        self.sub_title = b.name or "书籍详情"
+
+        renderable = Text()
+        renderable.append(f"  {b.name or '未命名'}\n", style="bold cyan")
+        renderable.append("  " + "─" * 40 + "\n\n", style="dim")
+
+        fields = [
+            ("作者", b.author, "green"),
+            ("分类", b.kind, "yellow"),
+            ("字数", b.wordCount, ""),
+            ("最新", b.latestChapterTitle, ""),
+        ]
+        for label, value, style in fields:
+            renderable.append(f"  {label}：", style="bold")
+            renderable.append(f"{value or '—'}\n", style=style)
+
+        renderable.append("\n")
+        renderable.append("  简介\n", style="bold underline")
+        renderable.append("  " + "─" * 40 + "\n", style="dim")
+        intro = (b.intro or "暂无简介").strip()
+        for para in intro.split("\n"):
+            wrapped = textwrap.fill(para.strip(), width=72, initial_indent="  ", subsequent_indent="  ")
+            renderable.append(wrapped + "\n\n", style="")
+
+        renderable.append("  " + "─" * 40 + "\n", style="dim")
+        renderable.append("  详情：", style="bold dim")
+        renderable.append(f"{b.bookUrl}\n", style="blue dim")
+        renderable.append("  目录：", style="bold dim")
+        renderable.append(f"{b.tocUrl or '—'}\n", style="blue dim")
+
+        entry = self.app.reader_state.get_bookshelf_entry(self._source, b)
+        if entry:
+            progress = format_progress(entry)
+            renderable.append(f"\n  [已在书架] 进度：{progress}\n", style="green")
+
+        self.query_one("#info-content", Static).update(renderable)
+
+    @work(thread=True)
+    def _load_chapters(self) -> None:
+        try:
+            chapters = get_chapter_list(self._source, self._book)
+        except Exception as e:
+            self.app.call_from_thread(self.app.error, f"目录加载失败：{e}")
+            chapters = []
+        self._chapters = chapters
+        self.app.call_from_thread(self._populate, chapters)
+
+    def _populate(self, chapters: List[BookChapter]) -> None:
+        self.query_one("#ch-loading").display = False
+        self._filtered = chapters
+        self._book.totalChapterNum = len(chapters)
+        tbl: DataTable = self.query_one("#ch-table", DataTable)
+        tbl.clear()
+
+        progress = self._resume_progress
+        last_read_index = progress.get("chapter_index")
+
+        for ch in chapters:
+            marker = "→" if ch.index == last_read_index else ""
+            tbl.add_row(
+                str(ch.index + 1),
+                f"{marker} {ch.title}" if marker else (ch.title or ""),
+                "★" if ch.isVip else "",
+                ch.url or "",
+                key=str(ch.index),
+            )
+
+        self.query_one("#chapter-count", Label).update(
+            f"[dim]{len(chapters)} 章[/dim]"
+        )
+
+        has_progress = bool(progress.get("chapter_index") is not None)
+        self.query_one("#btn-resume", Button).disabled = not has_progress
+
+        if self._auto_open and not self._auto_opened and chapters:
+            self._auto_opened = True
+            target = None
+            chapter_url = progress.get("chapter_url")
+            chapter_index = progress.get("chapter_index")
+            if chapter_url:
+                target = next((c for c in chapters if c.url == chapter_url), None)
+            if target is None and chapter_index is not None:
+                target = next((c for c in chapters if c.index == chapter_index), None)
+            if target is None:
+                target = chapters[0]
+            self._open_reader(target)
+
+    @on(Input.Changed, "#chapter-filter")
+    def filter_changed(self, event: Input.Changed) -> None:
+        q = event.value.lower()
+        filtered = (
+            [c for c in self._chapters if q in (c.title or "").lower()]
+            if q else self._chapters
+        )
+        self._filtered = filtered
+        tbl: DataTable = self.query_one("#ch-table", DataTable)
+        tbl.clear()
+        for ch in filtered:
+            tbl.add_row(
+                str(ch.index + 1),
+                ch.title or "",
+                "★" if ch.isVip else "",
+                ch.url or "",
+                key=str(ch.index),
+            )
+        self.query_one("#chapter-count", Label).update(
+            f"[dim]{len(filtered)} 章[/dim]"
+        )
+
+    @on(DataTable.RowSelected, "#ch-table")
+    def chapter_selected(self, event: DataTable.RowSelected) -> None:
+        idx = int(event.row_key.value)
+        ch = next((c for c in self._chapters if c.index == idx), None)
+        if ch:
+            self._open_reader(ch)
+
+    @on(Button.Pressed, "#btn-ch-jump")
+    def jump_pressed(self) -> None:
+        self.action_jump_to_chapter()
+
+    @on(Button.Pressed, "#btn-resume")
+    def resume_pressed(self) -> None:
+        self.action_goto_last_read()
+
+    @on(Button.Pressed, "#btn-save-shelf")
+    def save_shelf_pressed(self) -> None:
+        self.action_save_to_shelf()
+
+    @on(Button.Pressed, "#btn-back")
+    def back_pressed(self) -> None:
+        self.app.pop_screen()
+
+    def _open_reader(self, chapter: BookChapter) -> None:
+        progress = self._resume_progress or {}
+        initial_scroll_ratio = 0.0
+        if (
+            progress.get("chapter_index") == chapter.index
+            or (progress.get("chapter_url") and progress.get("chapter_url") == chapter.url)
+        ):
+            initial_scroll_ratio = float(progress.get("scroll_ratio", 0.0) or 0.0)
+        self._book.durChapterIndex = chapter.index
+        self._book.durChapterTitle = chapter.title
+        self.app.push_screen(
+            ReaderScreen(
+                book=self._book,
+                chapter=chapter,
+                chapters=self._chapters,
+                source=self._source,
+                initial_scroll_ratio=initial_scroll_ratio,
+            )
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3077,6 +3367,33 @@ AlertDialogScreen {
 #reader-progress-label {
     text-align: center;
     width: 1fr;
+}
+
+/* ─── BookScreen two-column layout ──────────────────────────────────── */
+BookScreen #book-screen-body {
+    height: 1fr;
+}
+BookScreen #book-info-col {
+    width: 2fr;
+    height: 100%;
+    border-right: solid $panel-lighten-1;
+    padding-right: 1;
+}
+BookScreen #book-chapter-col {
+    width: 3fr;
+    height: 100%;
+    padding-left: 1;
+}
+BookScreen #info-actions {
+    height: 3;
+    padding: 0 1;
+}
+BookScreen #chapters-top {
+    height: 3;
+    padding: 0 1;
+}
+BookScreen #info-scroll {
+    height: 1fr;
 }
 """ + _build_theme_css()
 

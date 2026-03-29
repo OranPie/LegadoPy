@@ -1,10 +1,11 @@
 """
 LegadoPy Qt6 Desktop Reader (PySide6).
 
-3-panel layout:
-  Left   – Search / Explore / Bookshelf tabs
-  Centre – Book Info / Chapters / Source / Auth tabs
-  Right  – Chapter content (QTextBrowser)
+Sidebar + 3-Stage layout:
+  Sidebar  – Source info & Bookshelf
+  Stage 0  – Discovery (Search + Explore)
+  Stage 1  – Book (Info card + Chapter list)
+  Stage 2  – Reading (QTextBrowser)
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QAction, QFont, QKeySequence, QTextCursor
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -38,17 +39,14 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
-    QTabWidget,
     QTextBrowser,
     QTextEdit,
     QToolBar,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -380,8 +378,476 @@ class AuthPanel(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Sidebar widget (240 px fixed, Source + Bookshelf groups)
+# ---------------------------------------------------------------------------
+
+class SidebarWidget(QWidget):
+    load_source_requested = Signal()
+    reload_source_requested = Signal()
+    auth_requested = Signal()
+    book_selected = Signal(str)       # bookshelf key
+    resume_requested = Signal(str)    # bookshelf key
+    remove_requested = Signal(str)    # bookshelf key
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(240)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        # ── Source group ──────────────────────────────────────────────
+        source_group = QGroupBox("Source")
+        sg = QVBoxLayout(source_group)
+        sg.setSpacing(4)
+
+        self._source_name = QLabel("No source loaded")
+        self._source_name.setStyleSheet("font-weight: bold;")
+        self._source_name.setWordWrap(True)
+        sg.addWidget(self._source_name)
+
+        self._source_url = QLabel("")
+        self._source_url.setWordWrap(True)
+        self._source_url.setMaximumHeight(34)
+        self._source_url.setStyleSheet("font-size: 11px;")
+        sg.addWidget(self._source_url)
+
+        self._source_caps = QLabel("")
+        self._source_caps.setStyleSheet("font-size: 11px;")
+        sg.addWidget(self._source_caps)
+
+        self._btn_load = QPushButton("📂 Load Source")
+        self._btn_load.clicked.connect(self.load_source_requested)
+        sg.addWidget(self._btn_load)
+
+        self._btn_reload = QPushButton("🔄 Reload")
+        self._btn_reload.setEnabled(False)
+        self._btn_reload.clicked.connect(self.reload_source_requested)
+        sg.addWidget(self._btn_reload)
+
+        self._btn_auth = QPushButton("🔐 Auth")
+        self._btn_auth.setVisible(False)
+        self._btn_auth.clicked.connect(self.auth_requested)
+        sg.addWidget(self._btn_auth)
+
+        root.addWidget(source_group)
+
+        # ── Bookshelf group ───────────────────────────────────────────
+        shelf_group = QGroupBox("Bookshelf")
+        sh = QVBoxLayout(shelf_group)
+        sh.setSpacing(4)
+
+        self._shelf_list = QListWidget()
+        self._shelf_list.itemDoubleClicked.connect(self._on_shelf_double_clicked)
+        sh.addWidget(self._shelf_list, 1)
+
+        shelf_btns = QHBoxLayout()
+        self._btn_resume = QPushButton("▶ Resume")
+        self._btn_resume.clicked.connect(self._on_resume)
+        shelf_btns.addWidget(self._btn_resume, 1)
+        self._btn_remove = QPushButton("🗑")
+        self._btn_remove.setFixedWidth(36)
+        self._btn_remove.clicked.connect(self._on_remove)
+        shelf_btns.addWidget(self._btn_remove)
+        sh.addLayout(shelf_btns)
+
+        root.addWidget(shelf_group, 1)
+
+    def update_source(self, source: Any) -> None:
+        self._source_name.setText(source.bookSourceName or "(unnamed)")
+        self._source_url.setText(source.bookSourceUrl or "")
+        caps = []
+        if getattr(source, "searchUrl", None):
+            caps.append("🔍 Search")
+        if getattr(source, "exploreUrl", None):
+            caps.append("🧭 Explore")
+        self._source_caps.setText("  ".join(caps) if caps else "")
+        self._btn_reload.setEnabled(True)
+        has_auth = bool(
+            getattr(source, "loginUi", None) or getattr(source, "loginUrl", None)
+        )
+        self._btn_auth.setVisible(has_auth)
+
+    def clear_source(self) -> None:
+        self._source_name.setText("No source loaded")
+        self._source_url.setText("")
+        self._source_caps.setText("")
+        self._btn_reload.setEnabled(False)
+        self._btn_auth.setVisible(False)
+
+    def refresh_bookshelf(self, entries: List[Dict[str, Any]]) -> None:
+        self._shelf_list.clear()
+        for entry in entries:
+            book = entry.get("book") or {}
+            progress = entry.get("progress") or {}
+            name = book.get("name", "(untitled)")
+            ch_idx = progress.get("chapter_index")
+            total_ch = progress.get("total_chapters")
+            ch_title = progress.get("chapter_title") or "Unread"
+            if ch_idx is not None and total_ch:
+                pct = int(int(ch_idx) * 100 / max(1, int(total_ch)))
+                line2 = f"{pct}% · {ch_title}"
+            else:
+                line2 = ch_title
+            item = QListWidgetItem(f"{name}\n{line2}")
+            item.setData(Qt.UserRole, entry.get("key"))
+            self._shelf_list.addItem(item)
+
+    def _get_selected_key(self) -> Optional[str]:
+        item = self._shelf_list.currentItem()
+        return str(item.data(Qt.UserRole)) if item else None
+
+    @Slot(QListWidgetItem)
+    def _on_shelf_double_clicked(self, item: QListWidgetItem) -> None:
+        key = item.data(Qt.UserRole)
+        if key:
+            self.book_selected.emit(str(key))
+
+    @Slot()
+    def _on_resume(self) -> None:
+        key = self._get_selected_key()
+        if key:
+            self.resume_requested.emit(key)
+
+    @Slot()
+    def _on_remove(self) -> None:
+        key = self._get_selected_key()
+        if key:
+            self.remove_requested.emit(key)
+
+
+# ---------------------------------------------------------------------------
+# Discovery page — Stage 0
+# ---------------------------------------------------------------------------
+
+class DiscoveryPage(QWidget):
+    book_selected = Signal(object)            # emits SearchBook
+    explore_category_requested = Signal(object)  # emits ExploreKind
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        # ── Search / Explore row ──────────────────────────────────────
+        search_row = QHBoxLayout()
+
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Search books…")
+        self._search_edit.returnPressed.connect(lambda: self._btn_search.click())
+        search_row.addWidget(self._search_edit, 1)
+
+        self._page_spin = QSpinBox()
+        self._page_spin.setRange(1, 9999)
+        self._page_spin.setFixedWidth(64)
+        search_row.addWidget(self._page_spin)
+
+        self._btn_search = QPushButton("🔍 Search")
+        search_row.addWidget(self._btn_search)
+
+        self._btn_explore = QPushButton("🧭 Explore")
+        search_row.addWidget(self._btn_explore)
+
+        root.addLayout(search_row)
+
+        # ── Sub-stack ─────────────────────────────────────────────────
+        self._sub_stack = QStackedWidget()
+        root.addWidget(self._sub_stack, 1)
+
+        # Sub-page 0: Search results
+        search_page = QWidget()
+        sp_layout = QVBoxLayout(search_page)
+        sp_layout.setContentsMargins(0, 0, 0, 0)
+        self._results_list = QListWidget()
+        self._results_list.itemDoubleClicked.connect(self._on_result_activated)
+        sp_layout.addWidget(self._results_list)
+        self._sub_stack.addWidget(search_page)
+
+        # Sub-page 1: Explore (categories + results)
+        explore_page = QWidget()
+        ep_layout = QVBoxLayout(explore_page)
+        ep_layout.setContentsMargins(0, 0, 0, 0)
+        explore_splitter = QSplitter(Qt.Vertical)
+        self._category_list = QListWidget()
+        self._category_list.itemDoubleClicked.connect(self._on_category_activated)
+        self._explore_results = QListWidget()
+        self._explore_results.itemDoubleClicked.connect(self._on_explore_result_activated)
+        explore_splitter.addWidget(self._category_list)
+        explore_splitter.addWidget(self._explore_results)
+        ep_layout.addWidget(explore_splitter)
+        self._sub_stack.addWidget(explore_page)
+
+        # Internal data for index lookups
+        self._search_results: List[SearchBook] = []
+        self._explore_kinds: List[ExploreKind] = []
+        self._explore_items: List[SearchBook] = []
+
+    def show_search_results(self, items: List[SearchBook]) -> None:
+        self._search_results = items
+        self._results_list.clear()
+        for item in items:
+            self._results_list.addItem(
+                f"{item.name or '(untitled)'}  —  {item.author or 'Unknown'}"
+            )
+        self._sub_stack.setCurrentIndex(0)
+
+    def show_categories(self, kinds: List[ExploreKind]) -> None:
+        self._explore_kinds = kinds
+        self._category_list.clear()
+        for k in kinds:
+            label = k.title or "(untitled)"
+            if not k.url:
+                label += "  [no url]"
+            self._category_list.addItem(label)
+        self._explore_results.clear()
+        self._sub_stack.setCurrentIndex(1)
+
+    def show_explore_results(self, items: List[SearchBook]) -> None:
+        self._explore_items = items
+        self._explore_results.clear()
+        for item in items:
+            self._explore_results.addItem(
+                f"{item.name or '(untitled)'}  —  {item.author or 'Unknown'}"
+            )
+
+    @Slot(QListWidgetItem)
+    def _on_result_activated(self, _item: QListWidgetItem) -> None:
+        row = self._results_list.currentRow()
+        if 0 <= row < len(self._search_results):
+            self.book_selected.emit(self._search_results[row])
+
+    @Slot(QListWidgetItem)
+    def _on_category_activated(self, _item: QListWidgetItem) -> None:
+        row = self._category_list.currentRow()
+        if 0 <= row < len(self._explore_kinds):
+            self.explore_category_requested.emit(self._explore_kinds[row])
+
+    @Slot(QListWidgetItem)
+    def _on_explore_result_activated(self, _item: QListWidgetItem) -> None:
+        row = self._explore_results.currentRow()
+        if 0 <= row < len(self._explore_items):
+            self.book_selected.emit(self._explore_items[row])
+
+
+# ---------------------------------------------------------------------------
+# Book page — Stage 1
+# ---------------------------------------------------------------------------
+
+class BookPage(QWidget):
+    chapter_selected = Signal(int)
+    resume_requested = Signal()
+    refresh_toc_requested = Signal()
+    back_requested = Signal()
+    add_to_shelf_requested = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        # ── Info card (fixed height ~130 px) ─────────────────────────
+        self._info_card = QFrame()
+        self._info_card.setFrameShape(QFrame.StyledPanel)
+        self._info_card.setFixedHeight(130)
+        card = QVBoxLayout(self._info_card)
+        card.setContentsMargins(12, 8, 12, 8)
+        card.setSpacing(4)
+
+        title_row = QHBoxLayout()
+        self._title_label = QLabel("—")
+        self._title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title_row.addWidget(self._title_label, 1)
+        self._author_label = QLabel("—")
+        self._author_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        title_row.addWidget(self._author_label)
+        card.addLayout(title_row)
+
+        self._meta_label = QLabel("—")
+        self._meta_label.setStyleSheet("font-size: 11px;")
+        card.addWidget(self._meta_label)
+
+        self._intro_label = QLabel("—")
+        self._intro_label.setWordWrap(True)
+        self._intro_label.setMaximumHeight(44)
+        card.addWidget(self._intro_label, 1)
+
+        root.addWidget(self._info_card)
+
+        # ── Action row ────────────────────────────────────────────────
+        action_row = QHBoxLayout()
+
+        self._btn_resume_ch = QPushButton("▶ Resume")
+        self._btn_resume_ch.setEnabled(False)
+        self._btn_resume_ch.clicked.connect(self.resume_requested)
+        action_row.addWidget(self._btn_resume_ch)
+
+        self._btn_shelf = QPushButton("⭐ Bookshelf")
+        self._btn_shelf.clicked.connect(self.add_to_shelf_requested)
+        action_row.addWidget(self._btn_shelf)
+
+        self._btn_refresh_toc = QPushButton("↺ Refresh TOC")
+        self._btn_refresh_toc.clicked.connect(self.refresh_toc_requested)
+        action_row.addWidget(self._btn_refresh_toc)
+
+        self._btn_back = QPushButton("← Back")
+        self._btn_back.clicked.connect(self.back_requested)
+        action_row.addWidget(self._btn_back)
+
+        action_row.addStretch()
+        root.addLayout(action_row)
+
+        # ── Chapter list ──────────────────────────────────────────────
+        self._chapter_list = QListWidget()
+        self._chapter_list.itemDoubleClicked.connect(self._on_chapter_activated)
+        root.addWidget(self._chapter_list, 1)
+
+    def set_book(self, book: Book, progress: Optional[Dict[str, Any]]) -> None:
+        self._title_label.setText(book.name or "—")
+        self._author_label.setText(book.author or "—")
+
+        meta_parts = []
+        if book.kind:
+            meta_parts.append(book.kind)
+        if book.wordCount:
+            meta_parts.append(str(book.wordCount))
+        if book.latestChapterTitle:
+            meta_parts.append(f"Latest: {book.latestChapterTitle}")
+        self._meta_label.setText(" · ".join(meta_parts) if meta_parts else "—")
+
+        intro = book.intro or ""
+        self._intro_label.setText((intro[:117] + "…") if len(intro) > 120 else (intro or "—"))
+
+        has_progress = bool(progress and progress.get("chapter_index") is not None)
+        self._btn_resume_ch.setEnabled(has_progress)
+
+    def set_chapters(self, chapters: List[BookChapter]) -> None:
+        self._chapter_list.clear()
+        for ch in chapters:
+            self._chapter_list.addItem(f"{ch.index + 1:>4}. {ch.title}")
+
+    def set_chapters_loading(self) -> None:
+        self._chapter_list.clear()
+        self._chapter_list.addItem("Loading chapters…")
+        self._btn_refresh_toc.setEnabled(False)
+
+    def highlight_chapter(self, index: int) -> None:
+        if 0 <= index < self._chapter_list.count():
+            self._chapter_list.setCurrentRow(index)
+
+    @Slot(QListWidgetItem)
+    def _on_chapter_activated(self, _item: QListWidgetItem) -> None:
+        row = self._chapter_list.currentRow()
+        if row >= 0:
+            self.chapter_selected.emit(row)
+
+
+# ---------------------------------------------------------------------------
+# Reader page — Stage 2
+# ---------------------------------------------------------------------------
+
+class ReaderPage(QWidget):
+    prev_requested = Signal()
+    next_requested = Signal()
+    toc_requested = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Nav bar ───────────────────────────────────────────────────
+        nav_bar = QHBoxLayout()
+        nav_bar.setContentsMargins(8, 4, 8, 4)
+
+        self._btn_prev = QPushButton("← Prev")
+        self._btn_prev.clicked.connect(self.prev_requested)
+        nav_bar.addWidget(self._btn_prev)
+
+        self._btn_toc = QPushButton("≡ TOC")
+        self._btn_toc.clicked.connect(self.toc_requested)
+        nav_bar.addWidget(self._btn_toc)
+
+        self._chapter_label = QLabel()
+        self._chapter_label.setAlignment(Qt.AlignCenter)
+        self._chapter_label.setStyleSheet("font-weight: bold;")
+        nav_bar.addWidget(self._chapter_label, 1)
+
+        self._btn_next = QPushButton("Next →")
+        self._btn_next.clicked.connect(self.next_requested)
+        nav_bar.addWidget(self._btn_next)
+
+        root.addLayout(nav_bar)
+
+        sep_top = QFrame()
+        sep_top.setFrameShape(QFrame.HLine)
+        root.addWidget(sep_top)
+
+        # ── Reader ────────────────────────────────────────────────────
+        self._reader = QTextBrowser()
+        self._reader.setOpenExternalLinks(True)
+        root.addWidget(self._reader, 1)
+
+        sep_bot = QFrame()
+        sep_bot.setFrameShape(QFrame.HLine)
+        root.addWidget(sep_bot)
+
+        # ── Progress bar ──────────────────────────────────────────────
+        progress_row = QHBoxLayout()
+        progress_row.setContentsMargins(8, 4, 8, 4)
+        self._progress_label = QLabel("📖 —")
+        progress_row.addWidget(self._progress_label)
+        progress_row.addStretch()
+        root.addLayout(progress_row)
+
+    def set_content(
+        self,
+        html: str,
+        chapter: BookChapter,
+        total: int,
+        book_name: str,
+        progress_pct: int,
+    ) -> None:
+        self._reader.setHtml(html)
+        self._chapter_label.setText(chapter.title or "")
+        ch_num = chapter.index + 1
+        self._progress_label.setText(
+            f"📖 {book_name} · Ch {ch_num}/{total} · {progress_pct}%"
+        )
+
+    def reload_html(self, html: str) -> None:
+        """Re-render HTML preserving scroll position (for theme/font refresh)."""
+        ratio = self.get_scroll_ratio()
+        self._reader.setHtml(html)
+        QTimer.singleShot(50, lambda: self.restore_scroll(ratio))
+
+    def restore_scroll(self, ratio: float) -> None:
+        if ratio > 0:
+            bar = self._reader.verticalScrollBar()
+            bar.setValue(int(bar.maximum() * ratio))
+
+    def get_scroll_ratio(self) -> float:
+        bar = self._reader.verticalScrollBar()
+        maximum = bar.maximum()
+        return bar.value() / maximum if maximum > 0 else 0.0
+
+    @property
+    def scroll_bar(self):
+        return self._reader.verticalScrollBar()
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
+
+_STAGE_LABELS = ["Discovery", "Discovery › Book", "Discovery › Book › Reading"]
+
 
 class LegadoApp(QMainWindow):
     def __init__(self, controller: Optional[ReaderController] = None) -> None:
@@ -389,12 +855,15 @@ class LegadoApp(QMainWindow):
         self._controller = controller or ReaderController()
         self._dark_mode = True
         self._reader_font_size = 15
+        self._reader_css: str = _READER_CSS_DARK
+        self._last_chapter_text: str = ""
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setInterval(800)
+        self._scroll_timer.setSingleShot(True)
         self._scroll_timer.timeout.connect(self._save_scroll_position)
 
         self.setWindowTitle("LegadoPy Reader")
-        self.resize(1560, 940)
+        self.resize(1400, 860)
         self._build_ui()
         self._apply_theme()
         self._restore_source()
@@ -406,223 +875,98 @@ class LegadoApp(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        # ── Toolbar ──────────────────────────────────────────────────
+        # ── Single toolbar ───────────────────────────────────────────
         tb = QToolBar("Main", self)
         tb.setMovable(False)
         self.addToolBar(tb)
 
-        self._btn_open_source = QPushButton("Open Source")
-        self._btn_open_source.clicked.connect(self._open_source_dialog)
-        tb.addWidget(self._btn_open_source)
+        self._breadcrumb = QLabel("Discovery")
+        self._breadcrumb.setContentsMargins(4, 0, 8, 0)
+        tb.addWidget(self._breadcrumb)
 
-        self._btn_reload = QPushButton("Reload")
-        self._btn_reload.clicked.connect(self._reload_source)
-        tb.addWidget(self._btn_reload)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
 
-        self._btn_resume = QPushButton("▶ Resume")
-        self._btn_resume.clicked.connect(self._resume_book)
-        tb.addWidget(self._btn_resume)
+        self._btn_font_minus = QPushButton("−")
+        self._btn_font_minus.setFixedWidth(28)
+        self._btn_font_minus.clicked.connect(lambda: self._change_font_size(-1))
+        tb.addWidget(self._btn_font_minus)
 
-        self._btn_categories = QPushButton("Categories")
-        self._btn_categories.clicked.connect(self._load_categories)
-        tb.addWidget(self._btn_categories)
+        self._font_label = QLabel(f"Aa {self._reader_font_size}")
+        self._font_label.setFixedWidth(44)
+        self._font_label.setAlignment(Qt.AlignCenter)
+        tb.addWidget(self._font_label)
 
-        self._btn_auth = QPushButton("Login / Auth")
-        self._btn_auth.setEnabled(False)
-        self._btn_auth.clicked.connect(self._open_auth_tab)
-        tb.addWidget(self._btn_auth)
-
-        tb.addSeparator()
-
-        tb.addWidget(QLabel(" Search: "))
-        self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("Enter query…")
-        self._search_edit.setFixedWidth(220)
-        self._search_edit.returnPressed.connect(self._trigger_search)
-        tb.addWidget(self._search_edit)
-
-        tb.addWidget(QLabel(" Page: "))
-        self._page_spin = QSpinBox()
-        self._page_spin.setRange(1, 9999)
-        self._page_spin.setFixedWidth(64)
-        tb.addWidget(self._page_spin)
-
-        self._btn_search = QPushButton("Search")
-        self._btn_search.clicked.connect(self._trigger_search)
-        tb.addWidget(self._btn_search)
+        self._btn_font_plus = QPushButton("+")
+        self._btn_font_plus.setFixedWidth(28)
+        self._btn_font_plus.clicked.connect(lambda: self._change_font_size(1))
+        tb.addWidget(self._btn_font_plus)
 
         tb.addSeparator()
-        tb.addWidget(QLabel(" Preload: "))
-        self._preload_spin = QSpinBox()
-        self._preload_spin.setRange(0, 10)
-        self._preload_spin.setValue(
-            int(self._controller.get_settings().get("preload_count", 2) or 2)
-        )
-        self._preload_spin.setFixedWidth(56)
-        self._preload_spin.valueChanged.connect(self._apply_settings)
-        tb.addWidget(self._preload_spin)
 
-        tb.addWidget(QLabel(" Font: "))
-        self._font_spin = QSpinBox()
-        self._font_spin.setRange(10, 28)
-        self._font_spin.setValue(self._reader_font_size)
-        self._font_spin.setFixedWidth(56)
-        self._font_spin.valueChanged.connect(self._change_font_size)
-        tb.addWidget(self._font_spin)
-
-        self._btn_theme = QPushButton("☀ Light")
-        self._btn_theme.setFixedWidth(80)
+        self._btn_theme = QPushButton("🌙 Dark")
+        self._btn_theme.setFixedWidth(90)
         self._btn_theme.clicked.connect(self._toggle_theme)
         tb.addWidget(self._btn_theme)
 
-        # ── Source label ─────────────────────────────────────────────
-        self._source_label = QLabel("No source loaded")
-        self._source_label.setContentsMargins(8, 0, 0, 0)
-        self._source_label.setStyleSheet("color: #89b4fa; font-weight: bold;")
-        tb2 = QToolBar("Source info", self)
-        tb2.setMovable(False)
-        tb2.addWidget(self._source_label)
-        self.addToolBarBreak()
-        self.addToolBar(tb2)
+        # ── Central layout: sidebar + stage stack ────────────────────
+        central = QWidget()
+        central.setContentsMargins(0, 0, 0, 0)
+        main_h = QHBoxLayout(central)
+        main_h.setContentsMargins(0, 0, 0, 0)
+        main_h.setSpacing(0)
+        self.setCentralWidget(central)
 
-        # ── Central splitter ─────────────────────────────────────────
-        splitter = QSplitter(Qt.Horizontal)
-        self.setCentralWidget(splitter)
+        self._sidebar = SidebarWidget()
+        main_h.addWidget(self._sidebar)
 
-        # Left panel
-        self._left_tabs = QTabWidget()
-        splitter.addWidget(self._left_tabs)
+        self._stage_stack = QStackedWidget()
+        main_h.addWidget(self._stage_stack, 1)
 
-        # Centre panel
-        self._centre_tabs = QTabWidget()
-        splitter.addWidget(self._centre_tabs)
+        # Stage 0 — Discovery
+        self._discovery = DiscoveryPage()
+        self._stage_stack.addWidget(self._discovery)
 
-        # Right panel
-        right = QWidget()
-        rv = QVBoxLayout(right)
-        rv.setContentsMargins(6, 6, 6, 6)
+        # Stage 1 — Book
+        self._book_page = BookPage()
+        self._stage_stack.addWidget(self._book_page)
 
-        nav = QHBoxLayout()
-        self._btn_prev = QPushButton("◀ Prev")
-        self._btn_prev.clicked.connect(self._open_prev_chapter)
-        self._btn_next = QPushButton("Next ▶")
-        self._btn_next.clicked.connect(self._open_next_chapter)
-        self._btn_refresh_ch = QPushButton("↺ Refresh Chapters")
-        self._btn_refresh_ch.clicked.connect(self._refresh_chapters)
-        self._chapter_label = QLabel()
-        self._chapter_label.setAlignment(Qt.AlignCenter)
-        self._chapter_label.setStyleSheet("color: #89b4fa; font-weight: bold;")
-        nav.addWidget(self._btn_prev)
-        nav.addWidget(self._btn_next)
-        nav.addStretch()
-        nav.addWidget(self._chapter_label)
-        nav.addStretch()
-        nav.addWidget(self._btn_refresh_ch)
-        rv.addLayout(nav)
-
-        self._reader = QTextBrowser()
-        self._reader.setOpenExternalLinks(True)
-        self._reader.verticalScrollBar().valueChanged.connect(self._on_scroll)
-        rv.addWidget(self._reader, 1)
-        splitter.addWidget(right)
-
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 6)
-
-        # ── Left tabs ────────────────────────────────────────────────
-        # Search results
-        search_w = QWidget()
-        sv = QVBoxLayout(search_w)
-        sv.setContentsMargins(6, 6, 6, 6)
-        self._results_list = QListWidget()
-        self._results_list.itemDoubleClicked.connect(self._open_selected_result)
-        sv.addWidget(self._results_list)
-        self._left_tabs.addTab(search_w, "Search")
-
-        # Explore / Categories
-        explore_w = QWidget()
-        ev = QVBoxLayout(explore_w)
-        ev.setContentsMargins(6, 6, 6, 6)
-        ebtns = QHBoxLayout()
-        self._btn_load_cats = QPushButton("Load Categories")
-        self._btn_load_cats.clicked.connect(self._load_categories)
-        self._btn_open_cat = QPushButton("Open Category")
-        self._btn_open_cat.clicked.connect(self._open_selected_category)
-        self._btn_open_explore = QPushButton("Open Book")
-        self._btn_open_explore.clicked.connect(self._open_selected_explore)
-        for b in (self._btn_load_cats, self._btn_open_cat, self._btn_open_explore):
-            ebtns.addWidget(b)
-        ebtns.addStretch()
-        ev.addLayout(ebtns)
-        explore_splitter = QSplitter(Qt.Vertical)
-        self._category_list = QListWidget()
-        self._category_list.itemDoubleClicked.connect(self._open_selected_category)
-        self._explore_results = QListWidget()
-        self._explore_results.itemDoubleClicked.connect(self._open_selected_explore)
-        explore_splitter.addWidget(self._category_list)
-        explore_splitter.addWidget(self._explore_results)
-        ev.addWidget(explore_splitter, 1)
-        self._left_tabs.addTab(explore_w, "Explore")
-
-        # Bookshelf
-        shelf_w = QWidget()
-        shv = QVBoxLayout(shelf_w)
-        shv.setContentsMargins(6, 6, 6, 6)
-        self._bookshelf = QTreeWidget()
-        self._bookshelf.setHeaderLabels(["Title", "Author", "Progress"])
-        self._bookshelf.setColumnWidth(0, 200)
-        self._bookshelf.setColumnWidth(1, 120)
-        self._bookshelf.setRootIsDecorated(False)
-        self._bookshelf.itemDoubleClicked.connect(self._open_selected_bookshelf)
-        shv.addWidget(self._bookshelf, 1)
-        shelf_btns = QHBoxLayout()
-        self._btn_shelf_open = QPushButton("Open")
-        self._btn_shelf_open.clicked.connect(self._open_selected_bookshelf)
-        self._btn_shelf_remove = QPushButton("Remove")
-        self._btn_shelf_remove.clicked.connect(self._remove_selected_bookshelf)
-        shelf_btns.addWidget(self._btn_shelf_open)
-        shelf_btns.addWidget(self._btn_shelf_remove)
-        shelf_btns.addStretch()
-        shv.addLayout(shelf_btns)
-        self._left_tabs.addTab(shelf_w, "Bookshelf")
-
-        # ── Centre tabs ──────────────────────────────────────────────
-        # Book Info
-        self._info_text = QTextEdit()
-        self._info_text.setReadOnly(True)
-        self._centre_tabs.addTab(self._info_text, "Book Info")
-
-        # Chapters
-        chapters_w = QWidget()
-        chv = QVBoxLayout(chapters_w)
-        chv.setContentsMargins(6, 6, 6, 6)
-        self._chapter_list = QListWidget()
-        self._chapter_list.itemDoubleClicked.connect(self._open_selected_chapter)
-        chv.addWidget(self._chapter_list, 1)
-        ch_btns = QHBoxLayout()
-        self._btn_open_ch = QPushButton("Open Chapter")
-        self._btn_open_ch.clicked.connect(self._open_selected_chapter)
-        ch_btns.addWidget(self._btn_open_ch)
-        ch_btns.addStretch()
-        chv.addLayout(ch_btns)
-        self._centre_tabs.addTab(chapters_w, "Chapters")
-
-        # Source
-        self._source_text = QTextEdit()
-        self._source_text.setReadOnly(True)
-        self._source_text.setFont(QFont("Courier New", 11))
-        self._centre_tabs.addTab(self._source_text, "Source")
-
-        # Auth
-        self._auth_panel = AuthPanel(self, self._controller)
-        self._auth_panel.status_changed.connect(self._set_status)
-        self._centre_tabs.addTab(self._auth_panel, "Auth")
+        # Stage 2 — Reading
+        self._reader_page = ReaderPage()
+        self._stage_stack.addWidget(self._reader_page)
 
         # ── Status bar ───────────────────────────────────────────────
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
-        self._status_bar.showMessage("Load a source JSON file to begin.")
+        self._status_bar.showMessage("Load a source file to begin.")
+
+        # ── Wire up sidebar signals ───────────────────────────────────
+        self._sidebar.load_source_requested.connect(self._open_source_dialog)
+        self._sidebar.reload_source_requested.connect(self._reload_source)
+        self._sidebar.auth_requested.connect(self._open_auth_dialog)
+        self._sidebar.book_selected.connect(self._open_bookshelf_entry)
+        self._sidebar.resume_requested.connect(self._resume_bookshelf_entry)
+        self._sidebar.remove_requested.connect(self._remove_bookshelf_entry)
+
+        # ── Wire up discovery signals ─────────────────────────────────
+        self._discovery._btn_search.clicked.connect(self._trigger_search)
+        self._discovery._btn_explore.clicked.connect(self._load_categories)
+        self._discovery.book_selected.connect(self._open_search_result)
+        self._discovery.explore_category_requested.connect(self._load_explore_category)
+
+        # ── Wire up book page signals ─────────────────────────────────
+        self._book_page.chapter_selected.connect(self._open_chapter)
+        self._book_page.resume_requested.connect(self._resume_current_book)
+        self._book_page.refresh_toc_requested.connect(self._refresh_toc)
+        self._book_page.back_requested.connect(lambda: self._show_stage(0))
+        self._book_page.add_to_shelf_requested.connect(self._add_to_shelf)
+
+        # ── Wire up reader page signals ───────────────────────────────
+        self._reader_page.prev_requested.connect(self._open_prev_chapter)
+        self._reader_page.next_requested.connect(self._open_next_chapter)
+        self._reader_page.toc_requested.connect(lambda: self._show_stage(1))
+        self._reader_page.scroll_bar.valueChanged.connect(self._on_scroll)
 
         # ── Keyboard shortcuts ───────────────────────────────────────
         for key, fn in (
@@ -635,7 +979,15 @@ class LegadoApp(QMainWindow):
             self.addAction(act)
 
     # ------------------------------------------------------------------
-    # Theme
+    # Stage navigation
+    # ------------------------------------------------------------------
+
+    def _show_stage(self, index: int) -> None:
+        self._stage_stack.setCurrentIndex(index)
+        self._breadcrumb.setText(_STAGE_LABELS[index])
+
+    # ------------------------------------------------------------------
+    # Theme & font
     # ------------------------------------------------------------------
 
     def _apply_theme(self) -> None:
@@ -643,20 +995,40 @@ class LegadoApp(QMainWindow):
         QApplication.instance().setStyleSheet(qss)
         self._btn_theme.setText("☀ Light" if self._dark_mode else "🌙 Dark")
         self._reader_css = _READER_CSS_DARK if self._dark_mode else _READER_CSS_LIGHT
-        self._source_label.setStyleSheet(
-            "color: #89b4fa; font-weight: bold;"
-            if self._dark_mode
-            else "color: #1e66f5; font-weight: bold;"
-        )
-        # Refresh reader if content is loaded
-        current = self._reader.toPlainText()
-        if current:
-            self._reader.setHtml(_text_to_html(current, self._reader_css))
+        if self._last_chapter_text:
+            self._reader_page.reload_html(
+                _text_to_html(self._last_chapter_text, self._reader_css)
+            )
 
     @Slot()
     def _toggle_theme(self) -> None:
         self._dark_mode = not self._dark_mode
         self._apply_theme()
+
+    def _change_font_size(self, delta: int) -> None:
+        self._reader_font_size = max(10, min(28, self._reader_font_size + delta))
+        self._font_label.setText(f"Aa {self._reader_font_size}")
+        size = self._reader_font_size
+        global _READER_CSS_DARK, _READER_CSS_LIGHT
+        _READER_CSS_DARK = (
+            f"body {{ background-color: #1e1e2e; color: #cdd6f4;"
+            f" font-family: 'Georgia', 'Noto Serif', serif;"
+            f" font-size: {size}px; line-height: 1.8;"
+            f" margin: 24px 48px; max-width: 800px; }}"
+            f" p {{ margin: 0.6em 0; }}"
+        )
+        _READER_CSS_LIGHT = (
+            f"body {{ background-color: #fafafa; color: #3c3c3c;"
+            f" font-family: 'Georgia', 'Noto Serif', serif;"
+            f" font-size: {size}px; line-height: 1.8;"
+            f" margin: 24px 48px; max-width: 800px; }}"
+            f" p {{ margin: 0.6em 0; }}"
+        )
+        self._reader_css = _READER_CSS_DARK if self._dark_mode else _READER_CSS_LIGHT
+        if self._last_chapter_text:
+            self._reader_page.reload_html(
+                _text_to_html(self._last_chapter_text, self._reader_css)
+            )
 
     # ------------------------------------------------------------------
     # Source management
@@ -667,8 +1039,8 @@ class LegadoApp(QMainWindow):
         if source is None:
             return
         self._controller.set_source(source)
-        self._update_source_ui(source)
-        self._refresh_bookshelf()
+        self._sidebar.update_source(source)
+        self._sidebar.refresh_bookshelf(self._controller.list_bookshelf_entries())
         self._set_status("Restored previously used source.")
 
     @Slot()
@@ -689,80 +1061,56 @@ class LegadoApp(QMainWindow):
         if not self._controller.session.source_path:
             QMessageBox.information(self, "Reload", "No source file path recorded.")
             return
-        self._run_task("Reloading source…", self._controller.reload_source, self._after_source_loaded)
+        self._run_task(
+            "Reloading source…",
+            self._controller.reload_source,
+            self._after_source_loaded,
+        )
 
     @Slot()
-    def _open_auth_tab(self) -> None:
-        self._auth_panel.load_source()
-        self._centre_tabs.setCurrentWidget(self._auth_panel)
-
-    def _update_source_ui(self, source: Any) -> None:
-        self._source_label.setText(f"{source.bookSourceName}  [{source.bookSourceUrl}]")
-        self._btn_auth.setEnabled(self._controller.has_source_auth())
-        # Fill Source tab
-        info = "\n".join([
-            f"Name: {source.bookSourceName}",
-            f"URL:  {source.bookSourceUrl}",
-            f"Search URL: {source.searchUrl or '—'}",
-            f"Explore URL: {source.exploreUrl or '—'}",
-            f"Concurrent Rate: {source.concurrentRate or '0'}",
-            f"Cookie Jar: {source.enabledCookieJar}",
-            "",
-            json.dumps(source.to_dict(), ensure_ascii=False, indent=2),
-        ])
-        self._source_text.setPlainText(info)
+    def _open_auth_dialog(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Source Authentication")
+        dlg.resize(680, 500)
+        layout = QVBoxLayout(dlg)
+        auth_panel = AuthPanel(dlg, self._controller)
+        auth_panel.status_changed.connect(self._set_status)
+        layout.addWidget(auth_panel, 1)
+        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
+        btn_box.rejected.connect(dlg.reject)
+        layout.addWidget(btn_box)
+        auth_panel.load_source()
+        dlg.exec()
 
     def _after_source_loaded(self, source: Any) -> None:
-        self._update_source_ui(source)
-        self._info_text.clear()
-        self._reader.clear()
-        self._chapter_label.clear()
-        self._results_list.clear()
-        self._category_list.clear()
-        self._explore_results.clear()
-        self._chapter_list.clear()
-        self._refresh_bookshelf()
-        self._set_status(f"Loaded source: {source.bookSourceName}.")
+        self._sidebar.update_source(source)
+        self._sidebar.refresh_bookshelf(self._controller.list_bookshelf_entries())
+        self._last_chapter_text = ""
+        self._set_status(f"Loaded: {source.bookSourceName}.")
 
     # ------------------------------------------------------------------
-    # Search
+    # Discovery: search
     # ------------------------------------------------------------------
 
     @Slot()
     def _trigger_search(self) -> None:
-        query = self._search_edit.text().strip()
+        query = self._discovery._search_edit.text().strip()
         if not query:
             QMessageBox.information(self, "Search", "Enter a search query first.")
             return
-        page = self._page_spin.value()
+        page = self._discovery._page_spin.value()
         self._run_task(
-            f'Searching for "{query}"\u2026',
+            f'Searching for "{query}"…',
             lambda: self._controller.search(query, page=page),
             self._after_search,
         )
 
     def _after_search(self, results: List[SearchBook]) -> None:
-        self._results_list.clear()
-        for item in results:
-            label = f"{item.name or '(untitled)'}  |  {item.author or 'Unknown author'}"
-            self._results_list.addItem(label)
-        self._left_tabs.setCurrentIndex(0)
-        self._set_status(f"{len(results)} search result(s) found.")
-
-    @Slot(QListWidgetItem)
-    def _open_selected_result(self, _item: QListWidgetItem | None = None) -> None:
-        row = self._results_list.currentRow()
-        if row < 0:
-            return
-        result = self._controller.session.search_results[row]
-        self._run_task(
-            f'Loading "{result.name}"\u2026',
-            lambda: self._controller.open_search_result(result),
-            self._after_book_loaded,
-        )
+        self._discovery.show_search_results(results)
+        self._set_status(f"{len(results)} result(s) found.")
 
     # ------------------------------------------------------------------
-    # Explore
+    # Discovery: explore
     # ------------------------------------------------------------------
 
     @Slot()
@@ -774,133 +1122,123 @@ class LegadoApp(QMainWindow):
         )
 
     def _after_categories_loaded(self, kinds: List[ExploreKind]) -> None:
-        self._category_list.clear()
-        self._explore_results.clear()
-        for k in kinds:
-            label = k.title or "(untitled)"
-            if not k.url:
-                label += "  [no url]"
-            self._category_list.addItem(label)
-        self._left_tabs.setCurrentIndex(1)
+        self._discovery.show_categories(kinds)
         self._set_status(f"{len(kinds)} categories loaded.")
 
-    @Slot()
-    def _open_selected_category(self) -> None:
-        row = self._category_list.currentRow()
-        if row < 0:
-            return
-        kind = self._controller.session.explore_kinds[row]
-        page = self._page_spin.value()
+    @Slot(object)
+    def _load_explore_category(self, kind: ExploreKind) -> None:
+        page = self._discovery._page_spin.value()
         self._run_task(
-            f'Loading "{kind.title or "(untitled)"}\u2026',
+            f'Loading "{kind.title or "(untitled)"}"…',
             lambda: self._controller.explore(kind, page=page),
             self._after_explore_results,
         )
 
     def _after_explore_results(self, results: List[SearchBook]) -> None:
-        self._explore_results.clear()
-        for item in results:
-            label = f"{item.name or '(untitled)'}  |  {item.author or 'Unknown author'}"
-            self._explore_results.addItem(label)
+        self._discovery.show_explore_results(results)
         kind = self._controller.session.active_explore_kind
         name = kind.title if kind and kind.title else "category"
         self._set_status(f'{len(results)} books in "{name}".')
 
-    @Slot()
-    def _open_selected_explore(self) -> None:
-        row = self._explore_results.currentRow()
-        if row < 0:
-            return
-        result = self._controller.session.explore_results[row]
+    # ------------------------------------------------------------------
+    # Opening a book (from search/explore result or bookshelf)
+    # ------------------------------------------------------------------
+
+    @Slot(object)
+    def _open_search_result(self, result: SearchBook) -> None:
         self._run_task(
-            f'Loading "{result.name}"\u2026',
-            lambda: self._controller.open_explore_result(result),
+            f'Loading "{result.name}"…',
+            lambda: self._controller.open_search_result(result),
             self._after_book_loaded,
         )
 
-    # ------------------------------------------------------------------
-    # Bookshelf
-    # ------------------------------------------------------------------
-
-    def _refresh_bookshelf(self) -> None:
-        self._bookshelf.clear()
-        for entry in self._controller.list_bookshelf_entries():
-            book = entry.get("book") or {}
-            progress = entry.get("progress") or {}
-            ch_title = progress.get("chapter_title") or "Unread"
-            item = QTreeWidgetItem([
-                book.get("name", "(untitled)"),
-                book.get("author", "Unknown author"),
-                ch_title,
-            ])
-            item.setData(0, Qt.UserRole, entry.get("key"))
-            self._bookshelf.addTopLevelItem(item)
-
-    @Slot(QTreeWidgetItem)
-    def _open_selected_bookshelf(self, _item: QTreeWidgetItem | None = None) -> None:
-        sel = self._bookshelf.currentItem()
-        if not sel:
-            return
-        key = sel.data(0, Qt.UserRole)
+    @Slot(str)
+    def _open_bookshelf_entry(self, key: str) -> None:
         self._run_task(
             "Opening bookshelf entry…",
-            lambda: self._controller.open_bookshelf_entry(str(key)),
+            lambda: self._controller.open_bookshelf_entry(key),
             self._after_book_loaded,
         )
 
-    @Slot()
-    def _remove_selected_bookshelf(self) -> None:
-        sel = self._bookshelf.currentItem()
-        if not sel:
-            return
-        key = sel.data(0, Qt.UserRole)
-        self._controller.remove_bookshelf_entry(str(key))
-        self._refresh_bookshelf()
+    @Slot(str)
+    def _resume_bookshelf_entry(self, key: str) -> None:
+        self._set_status("Loading book…")
+        worker = Worker(lambda: self._controller.open_bookshelf_entry(key))
+        worker.signals.result.connect(self._after_book_loaded_for_resume)
+        worker.signals.error.connect(self._on_task_error)
+        QThreadPool.globalInstance().start(worker)
+
+    @Slot(object)
+    def _after_book_loaded_for_resume(self, book: Book) -> None:
+        self._run_task(
+            "Resuming…",
+            self._controller.resume_current_book,
+            lambda text: self._after_chapter_loaded(
+                int(self._controller.session.current_chapter_index or 0), text
+            ),
+        )
+
+    @Slot(str)
+    def _remove_bookshelf_entry(self, key: str) -> None:
+        self._controller.remove_bookshelf_entry(key)
+        self._sidebar.refresh_bookshelf(self._controller.list_bookshelf_entries())
         self._set_status("Bookshelf entry removed.")
 
-    # ------------------------------------------------------------------
-    # Book / chapters
-    # ------------------------------------------------------------------
-
     def _after_book_loaded(self, book: Book) -> None:
-        info = "\n".join([
-            f"Name:    {book.name or '—'}",
-            f"Author:  {book.author or '—'}",
-            f"Kind:    {book.kind or '—'}",
-            f"Words:   {book.wordCount or '—'}",
-            f"Latest:  {book.latestChapterTitle or '—'}",
-            f"Cover:   {book.coverUrl or '—'}",
-            f"Book URL:{book.bookUrl or '—'}",
-            f"TOC URL: {book.tocUrl or '—'}",
-            "",
-            "Intro:",
-            book.intro or "—",
-        ])
-        self._info_text.setPlainText(info)
-        self._centre_tabs.setCurrentIndex(0)
-        self._refresh_bookshelf()
+        if self._controller.session.source:
+            self._sidebar.update_source(self._controller.session.source)
+        progress = self._controller.get_current_progress()
+        self._book_page.set_book(book, progress)
+        self._book_page.set_chapters_loading()
+        self._show_stage(1)
+        self._sidebar.refresh_bookshelf(self._controller.list_bookshelf_entries())
         self._run_task(
-            f'Loading chapters for "{book.name or "book"}"\u2026',
+            f'Loading chapters for "{book.name or "book"}"…',
             self._controller.load_chapters,
             self._after_chapters_loaded,
         )
 
     def _after_chapters_loaded(self, chapters: List[BookChapter]) -> None:
-        self._chapter_list.clear()
-        for ch in chapters:
-            self._chapter_list.addItem(f"{ch.index + 1:>4}. {ch.title}")
-        self._centre_tabs.setCurrentIndex(1)
+        self._book_page.set_chapters(chapters)
+        book = self._controller.session.book
+        if book is not None:
+            self._book_page.set_book(book, self._controller.get_current_progress())
         self._set_status(f"{len(chapters)} chapter(s) loaded. Double-click to read.")
 
+    # ------------------------------------------------------------------
+    # Chapter navigation
+    # ------------------------------------------------------------------
+
+    @Slot(int)
+    def _open_chapter(self, idx: int) -> None:
+        self._run_task(
+            f"Fetching chapter {idx + 1}…",
+            lambda: self._controller.get_chapter_content(idx),
+            lambda text: self._after_chapter_loaded(idx, text),
+        )
+
     @Slot()
-    def _open_selected_chapter(self) -> None:
-        row = self._chapter_list.currentRow()
-        if row < 0:
+    def _resume_current_book(self) -> None:
+        if not self._controller.session.book:
+            QMessageBox.information(self, "Resume", "No active book.")
             return
         self._run_task(
-            f"Fetching chapter {row + 1}…",
-            lambda: self._controller.get_chapter_content(row),
-            lambda text: self._after_chapter_loaded(row, text),
+            "Resuming…",
+            self._controller.resume_current_book,
+            lambda text: self._after_chapter_loaded(
+                int(self._controller.session.current_chapter_index or 0), text
+            ),
+        )
+
+    @Slot()
+    def _refresh_toc(self) -> None:
+        if not self._controller.session.book:
+            return
+        self._book_page.set_chapters_loading()
+        self._run_task(
+            "Refreshing TOC…",
+            self._controller.load_chapters,
+            self._after_chapters_loaded,
         )
 
     @Slot()
@@ -925,50 +1263,47 @@ class LegadoApp(QMainWindow):
             lambda text: self._after_chapter_loaded(target, text),
         )
 
-    @Slot()
-    def _refresh_chapters(self) -> None:
-        if not self._controller.session.book:
-            return
-        self._run_task("Refreshing chapters…", self._controller.load_chapters, self._after_chapters_loaded)
-
-    @Slot()
-    def _resume_book(self) -> None:
-        if not self._controller.session.book:
-            QMessageBox.information(self, "Resume", "No active book.")
-            return
-        self._run_task(
-            "Resuming current book…",
-            self._controller.resume_current_book,
-            lambda text: self._after_chapter_loaded(
-                int(self._controller.session.current_chapter_index or 0), text
-            ),
-        )
-
     def _after_chapter_loaded(self, chapter_index: int, text: str) -> None:
-        # Highlight chapter in list
-        if 0 <= chapter_index < self._chapter_list.count():
-            self._chapter_list.setCurrentRow(chapter_index)
-            chapter = self._controller.session.chapters[chapter_index]
-            self._chapter_label.setText(chapter.title)
+        chapters = self._controller.session.chapters
+        if not (0 <= chapter_index < len(chapters)):
+            return
+        chapter = chapters[chapter_index]
+        total = len(chapters)
+        book_name = (
+            self._controller.session.book.name
+            if self._controller.session.book
+            else "—"
+        )
+        progress_pct = int(chapter_index * 100 / total) if total > 0 else 0
 
-        self._render_content(text)
-        self._restore_scroll(chapter_index)
-        self._refresh_bookshelf()
-        self._set_status("Chapter rendered.")
+        self._last_chapter_text = text
+        html = _text_to_html(text, self._reader_css)
+        self._reader_page.set_content(html, chapter, total, book_name, progress_pct)
+        self._book_page.highlight_chapter(chapter_index)
+        self._show_stage(2)
 
-    def _render_content(self, text: str) -> None:
-        self._reader.setHtml(_text_to_html(text, self._reader_css))
-
-    def _restore_scroll(self, chapter_index: int) -> None:
+        # Restore saved scroll position (delayed so layout is settled)
         progress = self._controller.get_current_progress() or {}
         prog_idx_raw = progress.get("chapter_index")
         prog_idx = int(prog_idx_raw) if prog_idx_raw is not None else -1
-        if prog_idx != chapter_index:
-            return
-        scroll_ratio = float(progress.get("scroll_y", 0.0) or 0.0)
-        if scroll_ratio > 0:
-            bar = self._reader.verticalScrollBar()
-            bar.setValue(int(bar.maximum() * scroll_ratio))
+        if prog_idx == chapter_index:
+            scroll_ratio = float(progress.get("scroll_y", 0.0) or 0.0)
+            if scroll_ratio > 0:
+                QTimer.singleShot(
+                    50, lambda: self._reader_page.restore_scroll(scroll_ratio)
+                )
+
+        self._sidebar.refresh_bookshelf(self._controller.list_bookshelf_entries())
+        self._set_status(f"Ch {chapter_index + 1}/{total}: {chapter.title}")
+
+    # ------------------------------------------------------------------
+    # Bookshelf (add)
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _add_to_shelf(self) -> None:
+        self._sidebar.refresh_bookshelf(self._controller.list_bookshelf_entries())
+        self._set_status("Book is on your shelf.")
 
     # ------------------------------------------------------------------
     # Scroll persistence
@@ -980,41 +1315,12 @@ class LegadoApp(QMainWindow):
 
     @Slot()
     def _save_scroll_position(self) -> None:
-        self._scroll_timer.stop()
         if not self._controller.session.book or self._controller.get_current_chapter() is None:
             return
-        bar = self._reader.verticalScrollBar()
+        bar = self._reader_page.scroll_bar
         maximum = bar.maximum()
         ratio = bar.value() / maximum if maximum > 0 else 0.0
         self._controller.update_current_scroll(ratio)
-
-    # ------------------------------------------------------------------
-    # Settings
-    # ------------------------------------------------------------------
-
-    @Slot()
-    def _apply_settings(self) -> None:
-        self._controller.update_settings(preload_count=self._preload_spin.value())
-
-    @Slot(int)
-    def _change_font_size(self, size: int) -> None:
-        self._reader_font_size = size
-        global _READER_CSS_DARK, _READER_CSS_LIGHT
-        for attr, bg, fg in (
-            ("_READER_CSS_DARK", "#1e1e2e", "#cdd6f4"),
-            ("_READER_CSS_LIGHT", "#fafafa", "#3c3c3c"),
-        ):
-            globals()[attr] = (
-                f"body {{ background-color: {bg}; color: {fg};"
-                f" font-family: 'Georgia', 'Noto Serif', serif;"
-                f" font-size: {size}px; line-height: 1.8;"
-                f" margin: 24px 48px; max-width: 800px; }}"
-                f" p {{ margin: 0.6em 0; }}"
-            )
-        self._reader_css = _READER_CSS_DARK if self._dark_mode else _READER_CSS_LIGHT
-        current = self._reader.toPlainText()
-        if current:
-            self._reader.setHtml(_text_to_html(current, self._reader_css))
 
     # ------------------------------------------------------------------
     # Task runner
@@ -1034,21 +1340,6 @@ class LegadoApp(QMainWindow):
 
     def _set_status(self, text: str) -> None:
         self._status_bar.showMessage(text)
-
-    # ------------------------------------------------------------------
-    # Reader CSS property (updated by font/theme changes)
-    # ------------------------------------------------------------------
-
-    @property
-    def _reader_css(self) -> str:
-        return self.__reader_css
-
-    @_reader_css.setter
-    def _reader_css(self, value: str) -> None:
-        self.__reader_css = value
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
 
 
 # ---------------------------------------------------------------------------
