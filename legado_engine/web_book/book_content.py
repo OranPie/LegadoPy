@@ -3,7 +3,8 @@ BookContent – 1:1 port of BookContent.kt.
 Handles single-page and multi-page content extraction.
 """
 from __future__ import annotations
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from concurrent.futures import as_completed
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from ..engine import resolve_engine
 from ..analyze.analyze_rule import AnalyzeRule
@@ -85,30 +86,39 @@ def analyze_content(
                 content_pages.append(page_text)
             next_url = more_urls[0] if more_urls else ""
     elif len(next_urls) > 1:
-        for next_url in next_urls:
-            if next_url in visited:
-                continue
-            if next_chapter_url and get_absolute_url(base_url, next_url) == get_absolute_url(base_url, next_chapter_url):
-                continue
-            visited.append(next_url)
-            au = AnalyzeUrl(m_url=next_url, source=book_source, rule_data=book, chapter=chapter, engine=engine)
+        # All page URLs are known — fetch concurrently, reassemble in order
+        filtered = [
+            (i, u) for i, u in enumerate(next_urls)
+            if u not in visited and not (
+                next_chapter_url
+                and get_absolute_url(base_url, u) == get_absolute_url(base_url, next_chapter_url)
+            )
+        ]
+
+        def _fetch_page(order_url: tuple) -> tuple:
+            order, url = order_url
+            au = AnalyzeUrl(m_url=url, source=book_source, rule_data=book, chapter=chapter, engine=engine)
             res = au.get_str_response()
             res = run_login_check(au, book_source, res)
             if not res.body:
-                continue
+                return order, ""
             page_text, _ = _analyze_content_page(
-                book_source,
-                book,
-                chapter,
-                res.body,
-                next_url,
-                res.url,
-                next_chapter_url,
-                get_next_page_url=False,
-                engine=engine,
+                book_source, book, chapter, res.body, url, res.url,
+                next_chapter_url, get_next_page_url=False, engine=engine,
             )
-            if page_text:
-                content_pages.append(page_text)
+            return order, page_text or ""
+
+        page_results: Dict[int, str] = {}
+        futures = {engine.executor.submit(_fetch_page, item): item for item in filtered}
+        for fut in as_completed(futures):
+            try:
+                order, text = fut.result()
+                if text:
+                    page_results[order] = text
+            except Exception:
+                pass
+        for order in sorted(page_results):
+            content_pages.append(page_results[order])
 
     content = "\n".join(part for part in content_pages if part)
     if content_rule.replaceRegex:

@@ -3,7 +3,7 @@ BookChapterList – 1:1 port of BookChapterList.kt.
 """
 from __future__ import annotations
 from concurrent.futures import as_completed
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, List, Optional, Tuple, TYPE_CHECKING
 
 from ..engine import resolve_engine
 from ..analyze.analyze_rule import AnalyzeRule
@@ -14,6 +14,9 @@ from ..utils.network_utils import get_absolute_url
 if TYPE_CHECKING:
     from ..models.book_source import BookSource, TocRule
     from ..models.book import Book
+
+# Minimum chapter count before switching to parallel element parsing
+_CHAPTER_PARALLEL_THRESHOLD = 32
 
 
 def analyze_chapter_list(
@@ -150,41 +153,80 @@ def _analyze_chapter_page(
 
     chapters: List[BookChapter] = []
     if elements:
-        name_rule      = analyze_rule.split_source_rule(toc_rule.chapterName)
-        url_rule       = analyze_rule.split_source_rule(toc_rule.chapterUrl)
-        vip_rule       = analyze_rule.split_source_rule(toc_rule.isVip)
-        pay_rule       = analyze_rule.split_source_rule(toc_rule.isPay)
-        uptime_rule    = analyze_rule.split_source_rule(toc_rule.updateTime)
-        volume_rule    = analyze_rule.split_source_rule(toc_rule.isVolume)
+        # Pre-split all rules once (stateless, shareable across threads)
+        name_rule   = analyze_rule.split_source_rule(toc_rule.chapterName)
+        url_rule    = analyze_rule.split_source_rule(toc_rule.chapterUrl)
+        vip_rule    = analyze_rule.split_source_rule(toc_rule.isVip)
+        pay_rule    = analyze_rule.split_source_rule(toc_rule.isPay)
+        uptime_rule = analyze_rule.split_source_rule(toc_rule.updateTime)
+        volume_rule = analyze_rule.split_source_rule(toc_rule.isVolume)
 
-        for idx, item in enumerate(elements):
-            analyze_rule.set_content(item)
-            ch = BookChapter(bookUrl=book.bookUrl, baseUrl=redirect_url)
-            analyze_rule.set_chapter(ch)
-
-            raw_title = analyze_rule._get_string(name_rule) or ""
-            ch.title = engine.apply_title(raw_title, source=book_source, book=book, chapter=ch)
-            ch.url    = analyze_rule._get_string(url_rule) or ""
-            ch.tag    = analyze_rule._get_string(uptime_rule)
-            is_volume = analyze_rule._get_string(volume_rule) or ""
-            ch.isVolume = _is_true(is_volume)
-
-            if not ch.url:
-                if ch.isVolume:
-                    ch.url = f"{ch.title}{idx}"
-                else:
-                    ch.url = base_url
-
-            if ch.title:
-                is_vip = analyze_rule._get_string(vip_rule) or ""
-                is_pay = analyze_rule._get_string(pay_rule) or ""
-                ch.isVip = _is_true(is_vip)
-                ch.isPay = _is_true(is_pay)
-                chapters.append(ch)
+        if len(elements) >= _CHAPTER_PARALLEL_THRESHOLD:
+            # Parallel: each element gets its own AnalyzeRule instance
+            futures = [
+                engine.executor.submit(
+                    _parse_single_chapter,
+                    item, idx, book, book_source, base_url, redirect_url,
+                    name_rule, url_rule, vip_rule, pay_rule, uptime_rule, volume_rule,
+                    engine,
+                )
+                for idx, item in enumerate(elements)
+            ]
+            # Collect in submission order to preserve chapter sequence
+            chapters = [ch for f in futures if (ch := f.result()) is not None]
+        else:
+            for idx, item in enumerate(elements):
+                ch = _parse_single_chapter(
+                    item, idx, book, book_source, base_url, redirect_url,
+                    name_rule, url_rule, vip_rule, pay_rule, uptime_rule, volume_rule,
+                    engine,
+                )
+                if ch is not None:
+                    chapters.append(ch)
 
     return chapters, next_urls
+
+
+def _parse_single_chapter(
+    item: Any,
+    idx: int,
+    book: "Book",
+    book_source: "BookSource",
+    base_url: str,
+    redirect_url: str,
+    name_rule: list,
+    url_rule: list,
+    vip_rule: list,
+    pay_rule: list,
+    uptime_rule: list,
+    volume_rule: list,
+    engine,
+) -> "BookChapter | None":
+    """Parse one chapter element into a BookChapter. Thread-safe (own AnalyzeRule)."""
+    ar = AnalyzeRule(book, book_source, engine=engine)
+    ar.set_content(item)
+    ch = BookChapter(bookUrl=book.bookUrl, baseUrl=redirect_url)
+    ar.set_chapter(ch)
+
+    raw_title = ar._get_string(name_rule) or ""
+    ch.title   = engine.apply_title(raw_title, source=book_source, book=book, chapter=ch)
+    ch.url     = ar._get_string(url_rule) or ""
+    ch.tag     = ar._get_string(uptime_rule)
+    is_volume  = ar._get_string(volume_rule) or ""
+    ch.isVolume = _is_true(is_volume)
+
+    if not ch.url:
+        ch.url = f"{ch.title}{idx}" if ch.isVolume else base_url
+
+    if not ch.title:
+        return None
+
+    ch.isVip = _is_true(ar._get_string(vip_rule) or "")
+    ch.isPay = _is_true(ar._get_string(pay_rule) or "")
+    return ch
 
 
 def _is_true(val: str) -> bool:
     """Mirrors .isTrue() – checks for truthy string values."""
     return val.lower() in ("true", "1", "yes", "是", "✓")
+
