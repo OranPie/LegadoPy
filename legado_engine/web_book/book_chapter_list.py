@@ -2,8 +2,8 @@
 BookChapterList – 1:1 port of BookChapterList.kt.
 """
 from __future__ import annotations
-from concurrent.futures import as_completed
-from typing import Any, List, Optional, Tuple, TYPE_CHECKING
+from concurrent.futures import Future, as_completed
+from typing import Any, Callable, List, Optional, Tuple, TYPE_CHECKING
 
 from ..engine import resolve_engine
 from ..analyze.analyze_rule import AnalyzeRule
@@ -26,6 +26,7 @@ def analyze_chapter_list(
     redirect_url: str,
     body: Optional[str],
     engine=None,
+    progress_fn: Callable[[int, int], None] | None = None,
 ) -> List[BookChapter]:
     """
     Mirrors BookChapterList.analyzeChapterList() (outer form).
@@ -50,7 +51,8 @@ def analyze_chapter_list(
 
     # First page
     chapters, next_urls = _analyze_chapter_page(
-        book, base_url, redirect_url, body, toc_rule, list_rule, book_source, engine=engine
+        book, base_url, redirect_url, body, toc_rule, list_rule, book_source,
+        engine=engine, progress_fn=progress_fn,
     )
     chapter_list.extend(chapters)
 
@@ -136,6 +138,7 @@ def _analyze_chapter_page(
     list_rule: str,
     book_source: "BookSource",
     engine=None,
+    progress_fn: Callable[[int, int], None] | None = None,
 ) -> Tuple[List[BookChapter], List[str]]:
     """Single-page TOC parsing. Returns (chapters, next_urls)."""
     engine = resolve_engine(engine)
@@ -163,7 +166,7 @@ def _analyze_chapter_page(
 
         if len(elements) >= _CHAPTER_PARALLEL_THRESHOLD:
             # Parallel: each element gets its own AnalyzeRule instance
-            futures = [
+            futures: list[Future] = [
                 engine.executor.submit(
                     _parse_single_chapter,
                     item, idx, book, book_source, base_url, redirect_url,
@@ -172,8 +175,14 @@ def _analyze_chapter_page(
                 )
                 for idx, item in enumerate(elements)
             ]
-            # Collect in submission order to preserve chapter sequence
-            chapters = [ch for f in futures if (ch := f.result()) is not None]
+            total = len(futures)
+            index_map: dict[Future, int] = {f: i for i, f in enumerate(futures)}
+            results: dict[int, BookChapter | None] = {}
+            for fut in as_completed(futures):
+                results[index_map[fut]] = fut.result()
+                if progress_fn:
+                    progress_fn(len(results), total)
+            chapters = [ch for i in sorted(results) if (ch := results[i]) is not None]
         else:
             for idx, item in enumerate(elements):
                 ch = _parse_single_chapter(

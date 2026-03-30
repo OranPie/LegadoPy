@@ -6,6 +6,10 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .qt_runtime import configure_pyside6_runtime
+
+configure_pyside6_runtime()
+
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 

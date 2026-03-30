@@ -40,7 +40,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TaskProgressColumn
 from rich import box
 
 import legado_engine as le
@@ -169,8 +169,23 @@ def cmd_chapters(args):
     with spinner("Fetching book info…"):
         book = get_book_info(src, book)
 
-    with spinner(f"Fetching chapter list for '{book.name}'…"):
-        chapters = get_chapter_list(src, book)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(
+            f"Parsing chapters for '{book.name}'…", total=None
+        )
+
+        def _ch_progress(done: int, total: int) -> None:
+            progress.update(task, completed=done, total=total)
+
+        chapters = get_chapter_list(src, book, progress_fn=_ch_progress)
 
     t = Table(
         title=f"Chapters: {book.name} ({len(chapters)} total)",

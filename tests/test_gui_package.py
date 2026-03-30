@@ -1,6 +1,8 @@
 import json
+import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +30,52 @@ class GuiPackageTests(unittest.TestCase):
             source = load_source_file(path)
         self.assertEqual(source.bookSourceName, "Demo Source")
         self.assertEqual(source.bookSourceUrl, "https://example.com")
+
+    def test_configure_pyside6_runtime_prefers_bundled_qt_libs(self) -> None:
+        from legado_gui import qt_runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_dir = Path(tmpdir) / "PySide6"
+            qt_lib_dir = package_dir / "Qt" / "lib"
+            plugin_dir = package_dir / "Qt" / "plugins"
+            qml_dir = package_dir / "Qt" / "qml"
+            qt_lib_dir.mkdir(parents=True)
+            plugin_dir.mkdir(parents=True)
+            qml_dir.mkdir(parents=True)
+            for name in (
+                "libQt6Core.so.6",
+                "libQt6DBus.so.6",
+                "libQt6Network.so.6",
+                "libQt6Gui.so.6",
+                "libQt6Widgets.so.6",
+                "libQt6XcbQpa.so.6",
+            ):
+                (qt_lib_dir / name).write_text("", encoding="utf-8")
+
+            fake_pyside6 = types.SimpleNamespace(__file__=str(package_dir / "__init__.py"))
+            original_configured = qt_runtime._CONFIGURED
+            qt_runtime._CONFIGURED = False
+            try:
+                with patch.dict(sys.modules, {"PySide6": fake_pyside6}):
+                    with patch.dict(os.environ, {"LD_LIBRARY_PATH": "/usr/lib/x86_64-linux-gnu"}, clear=False):
+                        with patch("legado_gui.qt_runtime.ctypes.CDLL") as mock_cdll:
+                            qt_runtime.configure_pyside6_runtime()
+                            self.assertEqual(os.environ["LD_LIBRARY_PATH"].split(":")[0], str(qt_lib_dir))
+                            self.assertEqual(os.environ["QT_PLUGIN_PATH"], str(plugin_dir))
+                            self.assertEqual(os.environ["QML2_IMPORT_PATH"], str(qml_dir))
+                            self.assertEqual(
+                                [Path(call.args[0]).name for call in mock_cdll.call_args_list],
+                                [
+                                    "libQt6Core.so.6",
+                                    "libQt6DBus.so.6",
+                                    "libQt6Network.so.6",
+                                    "libQt6Gui.so.6",
+                                    "libQt6Widgets.so.6",
+                                    "libQt6XcbQpa.so.6",
+                                ],
+                            )
+            finally:
+                qt_runtime._CONFIGURED = original_configured
 
     def test_controller_uses_cached_chapter_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -2021,7 +2021,9 @@ class ChapterListScreen(Screen):
                 yield Button("继续", variant="primary", id="btn-ch-resume")
                 yield Label("", id="chapter-count")
 
-            yield LoadingIndicator(id="ch-loading")
+            with Horizontal(id="ch-loading", classes="chapter-loading-row"):
+                yield ProgressBar(id="ch-progress", show_eta=False)
+                yield Label("", id="ch-progress-label")
             yield DataTable(id="ch-table", cursor_type="row", zebra_stripes=True)
         yield Footer()
 
@@ -2092,13 +2094,23 @@ class ChapterListScreen(Screen):
 
     @work(thread=True)
     def _load_chapters(self) -> None:
+        def _on_progress(done: int, total: int) -> None:
+            self.app.call_from_thread(self._update_ch_progress, done, total)
+
         try:
-            chapters = get_chapter_list(self._source, self._book)
+            chapters = get_chapter_list(self._source, self._book, progress_fn=_on_progress)
         except Exception as e:
             self.app.call_from_thread(self.app.error, f"目录加载失败：{e}")
             chapters = []
         self._chapters = chapters
         self.app.call_from_thread(self._populate, chapters)
+
+    def _update_ch_progress(self, done: int, total: int) -> None:
+        try:
+            self.query_one("#ch-progress", ProgressBar).update(progress=done, total=total)
+            self.query_one("#ch-progress-label", Label).update(f"  {done}/{total}")
+        except Exception:
+            pass
 
     def _populate(self, chapters: List[BookChapter]) -> None:
         self.query_one("#ch-loading").display = False
@@ -2250,7 +2262,9 @@ class BookScreen(Screen):
                     yield Input(placeholder="🔍 筛选章节…", id="chapter-filter")
                     yield Button("跳转", id="btn-ch-jump")
                     yield Label("", id="chapter-count")
-                yield LoadingIndicator(id="ch-loading")
+                with Horizontal(id="ch-loading", classes="chapter-loading-row"):
+                    yield ProgressBar(id="ch-progress", show_eta=False)
+                    yield Label("", id="ch-progress-label")
                 yield DataTable(id="ch-table", cursor_type="row", zebra_stripes=True)
         yield Footer()
 
@@ -2377,13 +2391,23 @@ class BookScreen(Screen):
 
     @work(thread=True)
     def _load_chapters(self) -> None:
+        def _on_progress(done: int, total: int) -> None:
+            self.app.call_from_thread(self._update_ch_progress, done, total)
+
         try:
-            chapters = get_chapter_list(self._source, self._book)
+            chapters = get_chapter_list(self._source, self._book, progress_fn=_on_progress)
         except Exception as e:
             self.app.call_from_thread(self.app.error, f"目录加载失败：{e}")
             chapters = []
         self._chapters = chapters
         self.app.call_from_thread(self._populate, chapters)
+
+    def _update_ch_progress(self, done: int, total: int) -> None:
+        try:
+            self.query_one("#ch-progress", ProgressBar).update(progress=done, total=total)
+            self.query_one("#ch-progress-label", Label).update(f"  {done}/{total}")
+        except Exception:
+            pass
 
     def _populate(self, chapters: List[BookChapter]) -> None:
         self.query_one("#ch-loading").display = False
@@ -3277,6 +3301,15 @@ AlertDialogScreen {
 }
 #ch-loading {
     height: 1;
+    align: left middle;
+}
+.chapter-loading-row > ProgressBar {
+    width: 1fr;
+}
+.chapter-loading-row > Label {
+    width: auto;
+    padding: 0 1;
+    color: $text-muted;
 }
 
 /* ─── Discover ───────────────────────────────────────────────────────── */

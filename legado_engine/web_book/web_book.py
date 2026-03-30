@@ -290,6 +290,7 @@ def get_chapter_list(
     book_source: BookSource,
     book: Book,
     engine=None,
+    progress_fn: Callable[[int, int], None] | None = None,
 ) -> List[BookChapter]:
     """
     Fetch the table of contents and return a list of BookChapter objects.
@@ -327,6 +328,7 @@ def get_chapter_list(
             redirect_url=redirect_url,
             body=body,
             engine=engine,
+            progress_fn=progress_fn,
         )
         trace_event(
             "web_book.chapters.complete",

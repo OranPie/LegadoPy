@@ -14,6 +14,10 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .qt_runtime import configure_pyside6_runtime
+
+configure_pyside6_runtime()
+
 from PySide6.QtCore import (
     Qt,
     QThreadPool,
