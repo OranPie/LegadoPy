@@ -9,10 +9,10 @@ import re
 import traceback
 from typing import Any, List
 
-from .engine import resolve_engine
-from .analyze_url import JsCookie
-from .js_engine import JsExtensions, eval_js
-from .models.book_source import BookSource, ExploreKind
+from ..engine import resolve_engine
+from ..analyze.analyze_url import JsCookie
+from ..js import JsExtensions, eval_js
+from ..models.book_source import BookSource, ExploreKind
 
 
 _KIND_SPLIT_RE = re.compile(r"(?:&&|\n)+")
@@ -66,7 +66,7 @@ def _evaluate_explore_rule(book_source: BookSource, engine=None) -> str:
     return "" if result is None else str(result).strip()
 
 
-def get_explore_kinds(book_source: BookSource, engine=None) -> List[ExploreKind]:
+def get_explore_kinds(book_source: BookSource, engine=None) -> list[ExploreKind]:
     rule_str = book_source.exploreUrl or ""
     if not rule_str.strip():
         return []
@@ -82,7 +82,7 @@ def get_explore_kinds(book_source: BookSource, engine=None) -> List[ExploreKind]
         if isinstance(data, list):
             return [_parse_kind_item(item) for item in data]
 
-        kinds: List[ExploreKind] = []
+        kinds: list[ExploreKind] = []
         for chunk in _KIND_SPLIT_RE.split(resolved):
             chunk = chunk.strip()
             if not chunk:

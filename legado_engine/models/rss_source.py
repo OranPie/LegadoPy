@@ -3,17 +3,17 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .book import RuleData
 from .book_source import BaseSource
 
 
-def _str_equal(a: Optional[str], b: Optional[str]) -> bool:
+def _str_equal(a: str | None, b: str | None) -> bool:
     return a == b or ((a is None or a == "") and (b is None or b == ""))
 
 
-def _split_groups(value: Optional[str]) -> List[str]:
+def _split_groups(value: str | None) -> list[str]:
     if not value:
         return []
     return [part.strip() for part in re.split(r"[\n,]+", value) if part.strip()]
@@ -24,30 +24,30 @@ class RssSource(BaseSource):
     sourceUrl: str = ""
     sourceName: str = ""
     sourceIcon: str = ""
-    sourceGroup: Optional[str] = None
-    sourceComment: Optional[str] = None
+    sourceGroup: str | None = None
+    sourceComment: str | None = None
     enabled: bool = True
-    variableComment: Optional[str] = None
-    loginCheckJs: Optional[str] = None
-    coverDecodeJs: Optional[str] = None
-    sortUrl: Optional[str] = None
+    variableComment: str | None = None
+    loginCheckJs: str | None = None
+    coverDecodeJs: str | None = None
+    sortUrl: str | None = None
     singleUrl: bool = False
     articleStyle: int = 0
-    ruleArticles: Optional[str] = None
-    ruleNextPage: Optional[str] = None
-    ruleTitle: Optional[str] = None
-    rulePubDate: Optional[str] = None
-    ruleDescription: Optional[str] = None
-    ruleImage: Optional[str] = None
-    ruleLink: Optional[str] = None
-    ruleContent: Optional[str] = None
-    contentWhitelist: Optional[str] = None
-    contentBlacklist: Optional[str] = None
-    shouldOverrideUrlLoading: Optional[str] = None
-    style: Optional[str] = None
+    ruleArticles: str | None = None
+    ruleNextPage: str | None = None
+    ruleTitle: str | None = None
+    rulePubDate: str | None = None
+    ruleDescription: str | None = None
+    ruleImage: str | None = None
+    ruleLink: str | None = None
+    ruleContent: str | None = None
+    contentWhitelist: str | None = None
+    contentBlacklist: str | None = None
+    shouldOverrideUrlLoading: str | None = None
+    style: str | None = None
     enableJs: bool = True
     loadWithBaseUrl: bool = True
-    injectJs: Optional[str] = None
+    injectJs: str | None = None
     lastUpdateTime: int = 0
     customOrder: int = 0
 
@@ -114,7 +114,7 @@ class RssSource(BaseSource):
         return hash(self.sourceUrl)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RssSource":
+    def from_dict(cls, data: dict[str, Any]) -> "RssSource":
         return cls(
             sourceUrl=str(data.get("sourceUrl", "") or ""),
             sourceName=str(data.get("sourceName", "") or ""),
@@ -158,13 +158,13 @@ class RssSource(BaseSource):
         return cls.from_dict(json.loads(text))
 
     @classmethod
-    def from_json_array(cls, text: str) -> List["RssSource"]:
+    def from_json_array(cls, text: str) -> list["RssSource"]:
         data = json.loads(text)
         if isinstance(data, dict):
             return [cls.from_dict(data)]
         return [cls.from_dict(item) for item in data if isinstance(item, dict)]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "sourceUrl": self.sourceUrl,
             "sourceName": self.sourceName,
@@ -216,7 +216,7 @@ class RssArticle(RuleData):
     content: str = ""
     baseUrl: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "sourceUrl": self.sourceUrl,
             "sourceName": self.sourceName,

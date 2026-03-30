@@ -14,101 +14,101 @@ from typing import Any, Dict, Optional
 @dataclass
 class SearchRule:
     """ruleSearch – maps to SearchRule.kt"""
-    checkKeyWord: Optional[str] = None
-    bookList: Optional[str] = None
-    name: Optional[str] = None
-    author: Optional[str] = None
-    intro: Optional[str] = None
-    kind: Optional[str] = None
-    lastChapter: Optional[str] = None
-    updateTime: Optional[str] = None
-    bookUrl: Optional[str] = None
-    coverUrl: Optional[str] = None
-    wordCount: Optional[str] = None
+    checkKeyWord: str | None = None
+    bookList: str | None = None
+    name: str | None = None
+    author: str | None = None
+    intro: str | None = None
+    kind: str | None = None
+    lastChapter: str | None = None
+    updateTime: str | None = None
+    bookUrl: str | None = None
+    coverUrl: str | None = None
+    wordCount: str | None = None
 
 
 @dataclass
 class ExploreRule:
     """ruleExplore – maps to ExploreRule.kt"""
-    bookList: Optional[str] = None
-    name: Optional[str] = None
-    author: Optional[str] = None
-    intro: Optional[str] = None
-    kind: Optional[str] = None
-    lastChapter: Optional[str] = None
-    updateTime: Optional[str] = None
-    bookUrl: Optional[str] = None
-    coverUrl: Optional[str] = None
-    wordCount: Optional[str] = None
+    bookList: str | None = None
+    name: str | None = None
+    author: str | None = None
+    intro: str | None = None
+    kind: str | None = None
+    lastChapter: str | None = None
+    updateTime: str | None = None
+    bookUrl: str | None = None
+    coverUrl: str | None = None
+    wordCount: str | None = None
 
 
 @dataclass
 class ExploreKind:
     """Mirrors Legado's ExploreKind for discover/category buttons."""
     title: str = ""
-    url: Optional[str] = None
-    style: Optional[Dict[str, Any]] = None
+    url: str | None = None
+    style: Optional[dict[str, Any]] = None
 
 
 @dataclass
 class BookInfoRule:
     """ruleBookInfo – maps to BookInfoRule.kt"""
-    init: Optional[str] = None
-    name: Optional[str] = None
-    author: Optional[str] = None
-    intro: Optional[str] = None
-    kind: Optional[str] = None
-    lastChapter: Optional[str] = None
-    updateTime: Optional[str] = None
-    coverUrl: Optional[str] = None
-    tocUrl: Optional[str] = None
-    wordCount: Optional[str] = None
-    canReName: Optional[str] = None
-    downloadUrls: Optional[str] = None
+    init: str | None = None
+    name: str | None = None
+    author: str | None = None
+    intro: str | None = None
+    kind: str | None = None
+    lastChapter: str | None = None
+    updateTime: str | None = None
+    coverUrl: str | None = None
+    tocUrl: str | None = None
+    wordCount: str | None = None
+    canReName: str | None = None
+    downloadUrls: str | None = None
 
 
 @dataclass
 class TocRule:
     """ruleToc – maps to TocRule.kt"""
-    preUpdateJs: Optional[str] = None
-    chapterList: Optional[str] = None
-    chapterName: Optional[str] = None
-    chapterUrl: Optional[str] = None
-    formatJs: Optional[str] = None
-    isVolume: Optional[str] = None
-    isVip: Optional[str] = None
-    isPay: Optional[str] = None
-    updateTime: Optional[str] = None
-    nextTocUrl: Optional[str] = None
+    preUpdateJs: str | None = None
+    chapterList: str | None = None
+    chapterName: str | None = None
+    chapterUrl: str | None = None
+    formatJs: str | None = None
+    isVolume: str | None = None
+    isVip: str | None = None
+    isPay: str | None = None
+    updateTime: str | None = None
+    nextTocUrl: str | None = None
 
 
 @dataclass
 class ContentRule:
     """ruleContent – maps to ContentRule.kt"""
-    content: Optional[str] = None
-    title: Optional[str] = None
-    nextContentUrl: Optional[str] = None
-    webJs: Optional[str] = None
-    sourceRegex: Optional[str] = None
-    replaceRegex: Optional[str] = None
-    imageStyle: Optional[str] = None
-    imageDecode: Optional[str] = None
-    payAction: Optional[str] = None
+    content: str | None = None
+    title: str | None = None
+    nextContentUrl: str | None = None
+    webJs: str | None = None
+    sourceRegex: str | None = None
+    replaceRegex: str | None = None
+    imageStyle: str | None = None
+    imageDecode: str | None = None
+    payAction: str | None = None
 
 
 @dataclass
 class ReviewRule:
     """ruleReview – maps to ReviewRule.kt."""
-    reviewUrl: Optional[str] = None
-    avatarRule: Optional[str] = None
-    contentRule: Optional[str] = None
-    postTimeRule: Optional[str] = None
-    reviewQuoteUrl: Optional[str] = None
-    voteUpUrl: Optional[str] = None
-    voteDownUrl: Optional[str] = None
-    postReviewUrl: Optional[str] = None
-    postQuoteUrl: Optional[str] = None
-    deleteUrl: Optional[str] = None
+    reviewUrl: str | None = None
+    avatarRule: str | None = None
+    contentRule: str | None = None
+    postTimeRule: str | None = None
+    reviewQuoteUrl: str | None = None
+    voteUpUrl: str | None = None
+    voteDownUrl: str | None = None
+    postReviewUrl: str | None = None
+    postQuoteUrl: str | None = None
+    deleteUrl: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -117,13 +117,13 @@ class ReviewRule:
 
 @dataclass
 class BaseSource:
-    jsLib: Optional[str] = None
-    enabledCookieJar: Optional[bool] = True
-    concurrentRate: Optional[str] = None
-    header: Optional[str] = None
-    loginUrl: Optional[str] = None
-    loginUi: Optional[str] = None
-    _variables: Dict[str, str] = field(default_factory=dict, repr=False)
+    jsLib: str | None = None
+    enabledCookieJar: bool | None = True
+    concurrentRate: str | None = None
+    header: str | None = None
+    loginUrl: str | None = None
+    loginUi: str | None = None
+    _variables: dict[str, str] = field(default_factory=dict, repr=False)
 
     def get_key(self) -> str:
         return ""
@@ -137,21 +137,21 @@ class BaseSource:
     def getTag(self) -> str:  # noqa: N802
         return self.get_tag()
 
-    def get_header_map(self, has_login_header: bool = True, engine=None) -> Dict[str, str]:
-        headers: Dict[str, str] = {}
+    def get_header_map(self, has_login_header: bool = True, engine=None) -> dict[str, str]:
+        headers: dict[str, str] = {}
         if self.header:
             try:
                 header_text = self.header
                 if isinstance(header_text, str):
                     if header_text.startswith("@js:"):
-                        from ..js_engine import eval_js, JsExtensions
+                        from ..js import eval_js, JsExtensions
                         header_text = str(eval_js(
                             header_text[4:],
                             bindings={"source": self, "engine": engine},
                             java_obj=JsExtensions(engine=engine),
                         ) or "")
                     elif header_text.lower().startswith("<js>") and "</js>" in header_text.lower():
-                        from ..js_engine import eval_js, JsExtensions
+                        from ..js import eval_js, JsExtensions
                         end = header_text.lower().rfind("</js>")
                         header_text = str(eval_js(
                             header_text[4:end],
@@ -174,10 +174,10 @@ class BaseSource:
         return self._variables.get(key, "")
 
     def login_ui_rows(self):
-        from ..source_login import parse_source_ui
+        from ..auth.login import parse_source_ui
         return parse_source_ui(self)
 
-    def get_login_js(self) -> Optional[str]:
+    def get_login_js(self) -> str | None:
         login_js = self.loginUrl
         if login_js is None:
             return None
@@ -191,7 +191,7 @@ class BaseSource:
         login_js = self.get_login_js()
         if not login_js:
             return None
-        from ..js_engine import eval_js, JsExtensions
+        from ..js import eval_js, JsExtensions
         js = (
             f"{login_js}\n"
             "if (typeof login === 'function') {\n"
@@ -202,13 +202,13 @@ class BaseSource:
         )
         return eval_js(js, bindings={"source": self, "engine": engine}, java_obj=JsExtensions(engine=engine))
 
-    def getLoginJs(self) -> Optional[str]:  # noqa: N802
+    def getLoginJs(self) -> str | None:  # noqa: N802
         return self.get_login_js()
 
     def getLoginHeader(self) -> str:  # noqa: N802
         return self._variables.get("_login_header", "")
 
-    def get_login_header_map(self) -> Dict[str, str]:
+    def get_login_header_map(self) -> dict[str, str]:
         try:
             raw = self.getLoginHeader()
             return {
@@ -218,7 +218,7 @@ class BaseSource:
         except Exception:
             return {}
 
-    def getLoginHeaderMap(self) -> Dict[str, str]:  # noqa: N802
+    def getLoginHeaderMap(self) -> dict[str, str]:  # noqa: N802
         return self.get_login_header_map()
 
     def putLoginHeader(self, header: str) -> None:  # noqa: N802
@@ -230,7 +230,7 @@ class BaseSource:
     def removeLoginInfo(self) -> None:  # noqa: N802
         self._variables.pop("_login_info", None)
 
-    def setVariable(self, value: Optional[str]) -> None:  # noqa: N802
+    def setVariable(self, value: str | None) -> None:  # noqa: N802
         if value is None:
             self._variables.pop("custom_variable_blob", None)
         else:
@@ -245,7 +245,7 @@ class BaseSource:
     def putLoginInfo(self, info: str) -> None:  # noqa: N802
         self._variables["_login_info"] = info
 
-    def getLoginInfoMap(self) -> Dict[str, str]:  # noqa: N802
+    def getLoginInfoMap(self) -> dict[str, str]:  # noqa: N802
         try:
             raw = self.getLoginInfo()
             return {
@@ -266,34 +266,34 @@ class BookSource(BaseSource):
     # Core identity
     bookSourceUrl: str = ""
     bookSourceName: str = ""
-    bookSourceGroup: Optional[str] = None
+    bookSourceGroup: str | None = None
     bookSourceType: int = 0          # 0=text, 1=audio, 2=image, 3=file
-    bookUrlPattern: Optional[str] = None
+    bookUrlPattern: str | None = None
     customOrder: int = 0
     enabled: bool = True
     enabledExplore: bool = True
 
     # Source metadata
-    loginCheckJs: Optional[str] = None
-    coverDecodeJs: Optional[str] = None
-    bookSourceComment: Optional[str] = None
-    variableComment: Optional[str] = None
+    loginCheckJs: str | None = None
+    coverDecodeJs: str | None = None
+    bookSourceComment: str | None = None
+    variableComment: str | None = None
     lastUpdateTime: int = 0
     respondTime: int = 180000
     weight: int = 0
 
     # URL templates
-    exploreUrl: Optional[str] = None
-    exploreScreen: Optional[str] = None
-    searchUrl: Optional[str] = None
+    exploreUrl: str | None = None
+    exploreScreen: str | None = None
+    searchUrl: str | None = None
 
     # Rules (all optional – lazily created)
-    ruleExplore: Optional[ExploreRule] = None
-    ruleSearch: Optional[SearchRule] = None
-    ruleBookInfo: Optional[BookInfoRule] = None
-    ruleToc: Optional[TocRule] = None
-    ruleContent: Optional[ContentRule] = None
-    ruleReview: Optional[ReviewRule] = None
+    ruleExplore: ExploreRule | None = None
+    ruleSearch: SearchRule | None = None
+    ruleBookInfo: BookInfoRule | None = None
+    ruleToc: TocRule | None = None
+    ruleContent: ContentRule | None = None
+    ruleReview: ReviewRule | None = None
 
     def get_key(self) -> str:
         return self.bookSourceUrl
@@ -418,7 +418,7 @@ class BookSource(BaseSource):
         return BookSourcePart.from_book_source(self)
 
     @staticmethod
-    def _str_equal(a: Optional[str], b: Optional[str]) -> bool:
+    def _str_equal(a: str | None, b: str | None) -> bool:
         return a == b or ((a is None or a == "") and (b is None or b == ""))
 
     def equal(self, source: "BookSource") -> bool:
@@ -463,7 +463,7 @@ class BookSource(BaseSource):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "BookSource":
+    def from_dict(cls, d: dict[str, Any]) -> "BookSource":
         """Deserialize from the community JSON format."""
         def parse_rule(rule_cls, key: str):
             raw = d.get(key)
@@ -522,14 +522,14 @@ class BookSource(BaseSource):
     def from_json_array(cls, text: str) -> list["BookSource"]:
         return [cls.from_dict(d) for d in json.loads(text)]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         import dataclasses
         def _rule_to_dict(r):
             if r is None:
                 return None
             return {k: v for k, v in dataclasses.asdict(r).items() if v is not None}
 
-        d: Dict[str, Any] = {
+        d: dict[str, Any] = {
             "bookSourceUrl": self.bookSourceUrl,
             "bookSourceName": self.bookSourceName,
             "bookSourceGroup": self.bookSourceGroup,
@@ -570,7 +570,7 @@ class BookSourcePart:
 
     bookSourceUrl: str = ""
     bookSourceName: str = ""
-    bookSourceGroup: Optional[str] = None
+    bookSourceGroup: str | None = None
     customOrder: int = 0
     enabled: bool = True
     enabledExplore: bool = True

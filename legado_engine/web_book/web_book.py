@@ -7,7 +7,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, List, Optional, TYPE_CHECKING
 
-from ..analyze_url import AnalyzeUrl
+from ..analyze.analyze_url import AnalyzeUrl
 from ..debug import (
     snapshot_book,
     snapshot_chapter,
@@ -499,7 +499,7 @@ def do_login(
     }
 
     engine = resolve_engine(engine)
-    from ..js_engine import eval_js, JsExtensions
+    from ..js import eval_js, JsExtensions
 
     # eval_js will prepend jsLib; loginUrl defines login(), putLoginInfo(), etc.
     login_js = book_source.loginUrl + "\nlogin(true);"

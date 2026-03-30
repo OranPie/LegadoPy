@@ -4,8 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from legado_engine.analyze_url import JsCookie
-from legado_engine.js_engine import eval_js, JsExtensions
+from legado_engine.analyze.analyze_url import JsCookie
+from legado_engine.js import eval_js, JsExtensions
 from legado_engine.models.book_source import BookSource
 
 JS_CODE = r"""

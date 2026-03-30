@@ -11,7 +11,7 @@ from tkinter.scrolledtext import ScrolledText
 from typing import Any, Callable, Optional
 
 from legado_engine import Book, BookChapter, ExploreKind, SearchBook
-from legado_engine.source_login import SourceUiActionResult, UiRow
+from legado_engine.auth.login import SourceUiActionResult, UiRow
 
 from .controller import ReaderController
 

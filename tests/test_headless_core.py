@@ -20,7 +20,7 @@ from legado_engine import (  # noqa: E402
     get_book_info,
     get_content,
 )
-from legado_engine.js_engine import JsExtensions, eval_js  # noqa: E402
+from legado_engine.js import JsExtensions, eval_js  # noqa: E402
 
 
 def data_url(text: str) -> str:

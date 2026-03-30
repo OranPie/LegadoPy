@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from legado_engine import AnalyzeUrl, BookSource  # noqa: E402
 from legado_engine import LegadoEngine  # noqa: E402
-from legado_engine.js_engine import JsExtensions, eval_js  # noqa: E402
+from legado_engine.js import JsExtensions, eval_js  # noqa: E402
 
 
 class _HttpHelperHandler(BaseHTTPRequestHandler):

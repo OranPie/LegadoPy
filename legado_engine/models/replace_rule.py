@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Iterable
 
 try:
     import regex as _regex  # type: ignore[import]
@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover - optional dependency
     _regex = None
 
 
-def _split_scope(value: Optional[str]) -> List[str]:
+def _split_scope(value: str | None) -> list[str]:
     if not value:
         return []
     return [part.strip() for part in re.split(r"[\n,]+", value) if part.strip()]
@@ -21,13 +21,13 @@ def _split_scope(value: Optional[str]) -> List[str]:
 class ReplaceRule:
     id: int = 0
     name: str = ""
-    group: Optional[str] = None
+    group: str | None = None
     pattern: str = ""
     replacement: str = ""
-    scope: Optional[str] = None
+    scope: str | None = None
     scopeTitle: bool = False
     scopeContent: bool = True
-    excludeScope: Optional[str] = None
+    excludeScope: str | None = None
     isEnabled: bool = True
     isRegex: bool = True
     timeoutMillisecond: int = 3000
@@ -110,7 +110,7 @@ class ReplaceRule:
         return cls.from_dict(json.loads(text))
 
     @classmethod
-    def from_json_array(cls, text: str) -> List["ReplaceRule"]:
+    def from_json_array(cls, text: str) -> list["ReplaceRule"]:
         data = json.loads(text)
         if isinstance(data, dict):
             return [cls.from_dict(data)]

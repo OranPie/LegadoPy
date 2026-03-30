@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List
 
 from .analyze.analyze_rule import AnalyzeRule
-from .analyze_url import AnalyzeUrl
+from .analyze.analyze_url import AnalyzeUrl
 from .engine import resolve_engine
 from .models.review import ReviewEntry
 from .pipeline import run_login_check

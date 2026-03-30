@@ -12,16 +12,16 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 import requests as _requests
 from requests.utils import get_encoding_from_headers
 
-from .analyze.rule_analyzer import RuleAnalyzer
-from .engine import resolve_engine
-from .exceptions import UnsupportedHeadlessOperation
-from .js_engine import eval_js, JsExtensions
-from .utils.network_utils import get_absolute_url, get_base_url, get_sub_domain
-from .utils.cookie_store import CookieStore, cookie_store
+from .rule_analyzer import RuleAnalyzer
+from ..engine import resolve_engine
+from ..exceptions import UnsupportedHeadlessOperation
+from ..js import eval_js, JsExtensions
+from ..utils.network_utils import get_absolute_url, get_base_url, get_sub_domain
+from ..utils.cookie_store import CookieStore, cookie_store
 
 if TYPE_CHECKING:
-    from .models.book_source import BaseSource
-    from .models.book import Book, BookChapter, RuleData
+    from ..models.book_source import BaseSource
+    from ..models.book import Book, BookChapter, RuleData
 
 
 # ---------------------------------------------------------------------------
@@ -134,14 +134,14 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import requests as _requests
 
-from .analyze.rule_analyzer import RuleAnalyzer
-from .js_engine import eval_js, JsExtensions
-from .utils.network_utils import get_absolute_url, get_base_url, get_sub_domain
-from .utils.cookie_store import cookie_store
+from .rule_analyzer import RuleAnalyzer
+from ..js import eval_js, JsExtensions
+from ..utils.network_utils import get_absolute_url, get_base_url, get_sub_domain
+from ..utils.cookie_store import cookie_store
 
 if TYPE_CHECKING:
-    from .models.book_source import BaseSource
-    from .models.book import Book, BookChapter, RuleData
+    from ..models.book_source import BaseSource
+    from ..models.book import Book, BookChapter, RuleData
 
 
 class StrResponse:
@@ -299,7 +299,7 @@ class AnalyzeUrl:
     # ------------------------------------------------------------------
 
     def eval_js(self, js_str: str, result: Any = None) -> Any:
-        from .models.book import Book
+        from ..models.book import Book
         bindings = {
             "java":        self._java,
             "baseUrl":     self._base_url,

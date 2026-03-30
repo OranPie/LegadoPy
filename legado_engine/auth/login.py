@@ -8,31 +8,31 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .engine import resolve_engine
-from .js_engine import JsExtensions, eval_js
-from .models.book_source import BookSource
+from ..engine import resolve_engine
+from ..js import JsExtensions, eval_js
+from ..models.book_source import BookSource
 
 
 @dataclass
 class UiRow:
     name: str = ""
     type: str = "text"
-    action: Optional[str] = None
-    style: Optional[Dict[str, Any]] = None
+    action: str | None = None
+    style: Optional[dict[str, Any]] = None
 
 
 @dataclass
 class SourceUiActionResult:
     raw_result: Any = None
     message: str = ""
-    open_url: Optional[str] = None
+    open_url: str | None = None
     open_title: str = ""
-    html_content: Optional[str] = None
-    toasts: List[str] = field(default_factory=list)
-    logs: List[str] = field(default_factory=list)
+    html_content: str | None = None
+    toasts: list[str] = field(default_factory=list)
+    logs: list[str] = field(default_factory=list)
 
     def detail_text(self) -> str:
-        chunks: List[str] = []
+        chunks: list[str] = []
         if self.message:
             chunks.append(self.message)
         if self.open_url:
@@ -55,9 +55,9 @@ LoginRow = UiRow
 class _SourceUiJsExtensions(JsExtensions):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.logs: List[str] = []
-        self.toasts: List[str] = []
-        self.browser_url: Optional[str] = None
+        self.logs: list[str] = []
+        self.toasts: list[str] = []
+        self.browser_url: str | None = None
         self.browser_title: str = ""
         self._allow_browser_capture = True
 
@@ -80,7 +80,7 @@ class _SourceUiJsExtensions(JsExtensions):
         return super().startBrowserAwait(url, title)
 
 
-def parse_ui_rows(ui_text: str) -> List[UiRow]:
+def parse_ui_rows(ui_text: str) -> list[UiRow]:
     if not ui_text:
         return []
     raw: Any = None
@@ -97,7 +97,7 @@ def parse_ui_rows(ui_text: str) -> List[UiRow]:
                 return []
     if not isinstance(raw, list):
         return []
-    rows: List[UiRow] = []
+    rows: list[UiRow] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
@@ -110,20 +110,20 @@ def parse_ui_rows(ui_text: str) -> List[UiRow]:
     return rows
 
 
-def parse_source_ui(book_source: BookSource) -> List[UiRow]:
+def parse_source_ui(book_source: BookSource) -> list[UiRow]:
     return parse_ui_rows(book_source.loginUi or "")
 
 
-def parse_login_ui(book_source: BookSource) -> List[LoginRow]:
+def parse_login_ui(book_source: BookSource) -> list[LoginRow]:
     return parse_source_ui(book_source)
 
 
-def get_login_form_data(book_source: BookSource) -> Dict[str, str]:
+def get_login_form_data(book_source: BookSource) -> dict[str, str]:
     info = book_source.getLoginInfoMap()
     return {str(k): "" if v is None else str(v) for k, v in info.items()}
 
 
-def get_source_form_data(book_source: BookSource) -> Dict[str, str]:
+def get_source_form_data(book_source: BookSource) -> dict[str, str]:
     return get_login_form_data(book_source)
 
 
@@ -153,7 +153,7 @@ def _finalize_action_result(
     default_message: str,
 ) -> SourceUiActionResult:
     open_url = java.browser_url
-    html_content: Optional[str] = None
+    html_content: str | None = None
     if isinstance(raw_result, str):
         candidate = raw_result.strip()
         if candidate.startswith(("http://", "https://", "data:")) and not open_url:
@@ -173,7 +173,7 @@ def _finalize_action_result(
 
 def submit_login_detailed(
     book_source: BookSource,
-    form_data: Dict[str, str],
+    form_data: dict[str, str],
     engine=None,
 ) -> SourceUiActionResult:
     if not book_source.loginUrl:
@@ -191,17 +191,17 @@ def submit_login_detailed(
     return _finalize_action_result(raw_result, java, "认证已提交。")
 
 
-def submit_login(book_source: BookSource, form_data: Dict[str, str], engine=None) -> None:
+def submit_login(book_source: BookSource, form_data: dict[str, str], engine=None) -> None:
     submit_login_detailed(book_source, form_data, engine=engine)
 
 
-def submit_source_form(book_source: BookSource, form_data: Dict[str, str], engine=None) -> None:
+def submit_source_form(book_source: BookSource, form_data: dict[str, str], engine=None) -> None:
     submit_login(book_source, form_data, engine=engine)
 
 
 def submit_source_form_detailed(
     book_source: BookSource,
-    form_data: Dict[str, str],
+    form_data: dict[str, str],
     engine=None,
 ) -> SourceUiActionResult:
     return submit_login_detailed(book_source, form_data, engine=engine)
@@ -210,9 +210,9 @@ def submit_source_form_detailed(
 def run_login_button_action(
     book_source: BookSource,
     action: str,
-    form_data: Dict[str, str],
+    form_data: dict[str, str],
     engine=None,
-) -> Optional[str]:
+) -> str | None:
     result = execute_login_button_action(book_source, action, form_data, engine=engine)
     if result.open_url:
         return "opened_url"
@@ -222,7 +222,7 @@ def run_login_button_action(
 def execute_login_button_action(
     book_source: BookSource,
     action: str,
-    form_data: Dict[str, str],
+    form_data: dict[str, str],
     engine=None,
 ) -> SourceUiActionResult:
     if not action:
@@ -251,16 +251,16 @@ def execute_login_button_action(
 def run_source_ui_action(
     book_source: BookSource,
     action: str,
-    form_data: Dict[str, str],
+    form_data: dict[str, str],
     engine=None,
-) -> Optional[str]:
+) -> str | None:
     return run_login_button_action(book_source, action, form_data, engine=engine)
 
 
 def execute_source_ui_action(
     book_source: BookSource,
     action: str,
-    form_data: Dict[str, str],
+    form_data: dict[str, str],
     engine=None,
 ) -> SourceUiActionResult:
     return execute_login_button_action(book_source, action, form_data, engine=engine)

@@ -3,9 +3,9 @@ from __future__ import annotations
 import base64
 from typing import Any, Optional
 
-from .analyze_url import AnalyzeUrl
+from .analyze.analyze_url import AnalyzeUrl
 from .engine import resolve_engine
-from .js_engine import JsExtensions, eval_js
+from .js import JsExtensions, eval_js
 
 
 def _get_decode_rule(source: Any, *, is_cover: bool) -> Optional[str]:

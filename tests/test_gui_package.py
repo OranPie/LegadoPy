@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from legado_engine import Book, BookChapter, BookSource, ExploreKind, SearchBook  # noqa: E402
-from legado_engine.source_login import SourceUiActionResult  # noqa: E402
+from legado_engine.auth.login import SourceUiActionResult  # noqa: E402
 from legado_gui import ReaderController, load_source_file  # noqa: E402
 from reader_state import ReaderState  # noqa: E402
 

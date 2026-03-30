@@ -65,7 +65,7 @@ from legado_engine import (
     SourceUiActionResult, parse_source_ui, get_source_form_data,
     submit_source_form_detailed, execute_source_ui_action,
 )
-from legado_engine.analyze_url import AnalyzeUrl
+from legado_engine.analyze.analyze_url import AnalyzeUrl
 from reader_state import ReaderState
 
 

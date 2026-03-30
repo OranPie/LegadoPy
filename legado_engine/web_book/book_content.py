@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from ..engine import resolve_engine
 from ..analyze.analyze_rule import AnalyzeRule
-from ..analyze_url import AnalyzeUrl
+from ..analyze.analyze_url import AnalyzeUrl
 from ..pipeline import run_login_check
 from ..utils.html_formatter import format_html, format_keep_img
 from ..utils.network_utils import get_absolute_url

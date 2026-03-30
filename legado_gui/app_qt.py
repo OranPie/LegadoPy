@@ -52,7 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 from legado_engine import Book, BookChapter, ExploreKind, SearchBook
-from legado_engine.source_login import SourceUiActionResult, UiRow
+from legado_engine.auth.login import SourceUiActionResult, UiRow
 
 from .controller import ReaderController
 from .workers import Worker, submit

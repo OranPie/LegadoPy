@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from .analyze.analyze_rule import AnalyzeRule
-from .analyze_url import AnalyzeUrl
+from .analyze.analyze_url import AnalyzeUrl
 from .engine import resolve_engine
 from .exceptions import UnsupportedHeadlessOperation
 from .models.book import RuleData

@@ -8,7 +8,7 @@ from typing import Any, Callable, List, Optional, TYPE_CHECKING
 
 from ..engine import resolve_engine
 from ..analyze.analyze_rule import AnalyzeRule
-from ..analyze_url import AnalyzeUrl, StrResponse
+from ..analyze.analyze_url import AnalyzeUrl, StrResponse
 from ..models.book import Book, SearchBook
 from ..utils.html_formatter import format_book_name, format_book_author, format_html
 from ..utils.network_utils import get_absolute_url

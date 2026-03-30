@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cli  # noqa: E402
 from legado_engine import BookSource  # noqa: E402
-from legado_engine.source_login import SourceUiActionResult  # noqa: E402
+from legado_engine.auth.login import SourceUiActionResult  # noqa: E402
 
 
 class CliTests(unittest.TestCase):

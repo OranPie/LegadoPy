@@ -19,7 +19,7 @@ from legado_engine import (
     get_content,
     search_book,
 )
-from legado_engine.source_login import (
+from legado_engine.auth.login import (
     SourceUiActionResult,
     UiRow,
     execute_source_ui_action,

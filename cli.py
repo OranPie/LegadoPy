@@ -49,7 +49,7 @@ from legado_engine import (
     search_book, get_book_info, get_chapter_list, get_content, explore_book,
     get_explore_kinds,
 )
-from legado_engine.source_login import (
+from legado_engine.auth.login import (
     SourceUiActionResult,
     execute_source_ui_action,
     get_source_form_data,

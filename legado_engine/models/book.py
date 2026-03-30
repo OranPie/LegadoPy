@@ -4,7 +4,7 @@ Book, BookChapter, SearchBook, RuleData – 1:1 port of Legado entities.
 from __future__ import annotations
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..debug import snapshot_book, trace_event
 
@@ -12,36 +12,36 @@ from ..debug import snapshot_book, trace_event
 @dataclass
 class RuleData:
     """Mirrors RuleDataInterface + RuleData.kt – holds per-source variable state."""
-    variable: Optional[str] = None  # serialized JSON variable map
-    _var_map: Dict[str, str] = field(default_factory=dict, repr=False)
+    variable: str | None = None  # serialized JSON variable map
+    _var_map: dict[str, str] = field(default_factory=dict, repr=False)
 
     def _sync_variable_blob(self) -> None:
         self.variable = json.dumps(self._var_map, ensure_ascii=False) if self._var_map else None
 
-    def put_variable(self, key: str, value: Optional[str]) -> None:
+    def put_variable(self, key: str, value: str | None) -> None:
         if value is None:
             self._var_map.pop(key, None)
         else:
             self._var_map[key] = value
         self._sync_variable_blob()
 
-    def get_variable(self, key: str) -> Optional[str]:
+    def get_variable(self, key: str) -> str | None:
         return self._var_map.get(key)
 
-    def get_variable_map(self) -> Dict[str, str]:
+    def get_variable_map(self) -> dict[str, str]:
         return dict(self._var_map)
 
     def get_variable_json(self) -> str:
         return json.dumps(self._var_map, ensure_ascii=False)
 
-    def load_variable(self, json_str: Optional[str]) -> None:
+    def load_variable(self, json_str: str | None) -> None:
         try:
             self._var_map = json.loads(json_str or "") or {}
         except Exception:
             self._var_map = {}
         self._sync_variable_blob()
 
-    def load_variable_map(self, values: Optional[Dict[str, Any]]) -> None:
+    def load_variable_map(self, values: Optional[dict[str, Any]]) -> None:
         if values:
             self._var_map = {
                 str(key): "" if value is None else str(value)
@@ -51,14 +51,14 @@ class RuleData:
             self._var_map = {}
         self._sync_variable_blob()
 
-    def putVariable(self, key: str, value: Optional[str]) -> bool:  # noqa: N802
+    def putVariable(self, key: str, value: str | None) -> bool:  # noqa: N802
         self.put_variable(key, value)
         return True
 
     def getVariable(self, key: str) -> str:  # noqa: N802
         return self.get_variable(key) or ""
 
-    def getVariableMap(self) -> Dict[str, str]:  # noqa: N802
+    def getVariableMap(self) -> dict[str, str]:  # noqa: N802
         return self.get_variable_map()
 
 
@@ -76,8 +76,8 @@ class Book(RuleData):
     wordCount: str = ""
     coverUrl: str = ""
     tocUrl: str = ""
-    tocHtml: Optional[str] = None
-    infoHtml: Optional[str] = None
+    tocHtml: str | None = None
+    infoHtml: str | None = None
     latestChapterTitle: str = ""
     latestChapterTime: int = 0
     lastCheckTime: int = 0
@@ -87,8 +87,8 @@ class Book(RuleData):
     durChapterTitle: str = ""
     totalChapterNum: int = 0
     type: int = 0               # BookSourceType
-    readConfig: Optional[Dict[str, Any]] = None
-    downloadUrls: Optional[List[str]] = None
+    readConfig: Optional[dict[str, Any]] = None
+    downloadUrls: Optional[list[str]] = None
     # Extra flags
     _reverse_toc: bool = False
     _use_replace_rule: bool = True
@@ -137,12 +137,12 @@ class BookChapter(RuleData):
     url: str = ""
     title: str = ""
     baseUrl: str = ""
-    tag: Optional[str] = None       # e.g. update time
+    tag: str | None = None       # e.g. update time
     isVolume: bool = False
     isVip: bool = False
     isPay: bool = False
-    wordCount: Optional[str] = None
-    titleMD5: Optional[str] = None
+    wordCount: str | None = None
+    titleMD5: str | None = None
 
     def get_display_title(self, replace_rules=None, use_replace=True) -> str:
         if not use_replace:
@@ -176,8 +176,8 @@ class SearchBook(RuleData):
     coverUrl: str = ""
     latestChapterTitle: str = ""
     tocUrl: str = ""
-    infoHtml: Optional[str] = None
-    tocHtml: Optional[str] = None
+    infoHtml: str | None = None
+    tocHtml: str | None = None
 
     def to_book(self) -> Book:
         b = Book(

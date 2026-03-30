@@ -4,43 +4,16 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Iterable, List
 
 import requests as _requests
 from requests.adapters import HTTPAdapter
 
+from .cache import CacheStore
+from .rate_limit import ConcurrentRateLease, acquire_rate_limit
 from .utils.cookie_store import CookieStore
-
-
-class CacheStore:
-    """Simple shared in-process cache exposed to JS and fetch pipelines."""
-
-    def __init__(self) -> None:
-        self._store: Dict[str, Any] = {}
-
-    def get(self, key: Any, default: Any = "") -> Any:
-        return self._store.get(str(key), default)
-
-    def put(self, key: Any, value: Any) -> Any:
-        self._store[str(key)] = value
-        return value
-
-    def remove(self, key: Any) -> None:
-        self._store.pop(str(key), None)
-
-    def contains(self, key: Any) -> bool:
-        return str(key) in self._store
-
-    def clear(self) -> None:
-        self._store.clear()
-
-    def export(self) -> Dict[str, Any]:
-        return dict(self._store)
-
-    def replace_all(self, values: Dict[str, Any]) -> None:
-        self._store = dict(values)
 
 
 @dataclass
@@ -53,7 +26,7 @@ class ReplaceContext:
     article_link: str = ""
     article_title: str = ""
 
-    def tokens(self) -> List[str]:
+    def tokens(self) -> list[str]:
         return [
             token
             for token in (
@@ -69,43 +42,18 @@ class ReplaceContext:
         ]
 
 
-@dataclass
-class ConcurrentRateRecord:
-    is_concurrent: bool
-    time_ms: int
-    frequency: int
-    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-
-
-class ConcurrentRateLease:
-    def __init__(self, record: Optional[ConcurrentRateRecord]) -> None:
-        self._record = record
-
-    def release(self) -> None:
-        if self._record is None or self._record.is_concurrent:
-            return
-        with self._record.lock:
-            self._record.frequency -= 1
-
-    def __enter__(self) -> "ConcurrentRateLease":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.release()
-
-
 class LegadoEngine:
     """Explicit headless engine/session state."""
 
     def __init__(self) -> None:
         self.cookie_store = CookieStore()
         self.cache = CacheStore()
-        self.replace_rules: List[Any] = []
-        self.rss_sources: Dict[str, Any] = {}
-        self._text_cache: Dict[str, Dict[str, Any]] = {}
-        self._rate_limit_records: Dict[str, ConcurrentRateRecord] = {}
+        self.replace_rules: list[Any] = []
+        self.rss_sources: dict[str, Any] = {}
+        self._text_cache: dict[str, dict[str, Any]] = {}
+        self._rate_limit_records: dict[str, Any] = {}
         self._rate_limit_lock = threading.Lock()
-        self._http_sessions: Dict[str, _requests.Session] = {}
+        self._http_sessions: dict[str, _requests.Session] = {}
         self._http_sessions_lock = threading.Lock()
         token = uuid.uuid4().hex
         self.device_id = token
@@ -173,7 +121,7 @@ class LegadoEngine:
             article_title=getattr(article, "title", ""),
         )
 
-    def _iter_sorted_rules(self) -> List[Any]:
+    def _iter_sorted_rules(self) -> list[Any]:
         return sorted(
             self.replace_rules,
             key=lambda rule: (getattr(rule, "order", 0), getattr(rule, "id", 0)),
@@ -181,7 +129,7 @@ class LegadoEngine:
 
     def apply_replace_rules(
         self,
-        text: Optional[str],
+        text: str | None,
         *,
         is_title: bool,
         is_content: bool,
@@ -204,13 +152,13 @@ class LegadoEngine:
                 result = rule.apply(result)
         return result
 
-    def apply_title(self, text: Optional[str], **context: Any) -> str:
+    def apply_title(self, text: str | None, **context: Any) -> str:
         return self.apply_replace_rules(text, is_title=True, is_content=False, **context)
 
-    def apply_content(self, text: Optional[str], **context: Any) -> str:
+    def apply_content(self, text: str | None, **context: Any) -> str:
         return self.apply_replace_rules(text, is_title=False, is_content=True, **context)
 
-    def get_cached_text(self, key: str) -> Optional[str]:
+    def get_cached_text(self, key: str) -> str | None:
         entry = self._text_cache.get(str(key))
         if not entry:
             return None
@@ -227,15 +175,15 @@ class LegadoEngine:
             "expires_at": expires_at,
         }
 
-    def export_text_cache(self) -> Dict[str, Dict[str, Any]]:
-        valid: Dict[str, Dict[str, Any]] = {}
+    def export_text_cache(self) -> dict[str, dict[str, Any]]:
+        valid: dict[str, dict[str, Any]] = {}
         for key in list(self._text_cache.keys()):
             value = self.get_cached_text(key)
             if value is not None:
                 valid[key] = dict(self._text_cache[key])
         return valid
 
-    def replace_text_cache(self, values: Dict[str, Dict[str, Any]]) -> None:
+    def replace_text_cache(self, values: dict[str, dict[str, Any]]) -> None:
         self._text_cache = {
             str(key): {
                 "value": str((entry or {}).get("value", "")),
@@ -245,64 +193,7 @@ class LegadoEngine:
         }
 
     def acquire_rate_limit(self, source: Any) -> ConcurrentRateLease:
-        source_key = ""
-        if source is not None:
-            source_key = (
-                getattr(source, "get_key", lambda: "")()
-                or getattr(source, "getKey", lambda: "")()
-                or getattr(source, "bookSourceUrl", "")
-                or getattr(source, "sourceUrl", "")
-            )
-        concurrent_rate = (getattr(source, "concurrentRate", None) or "").strip()
-        if not source_key or not concurrent_rate or concurrent_rate == "0":
-            return ConcurrentRateLease(None)
-
-        rate_index = concurrent_rate.find("/")
-        while True:
-            now_ms = int(time.time() * 1000)
-            with self._rate_limit_lock:
-                record = self._rate_limit_records.get(source_key)
-                if record is None:
-                    record = ConcurrentRateRecord(
-                        is_concurrent=rate_index > 0,
-                        time_ms=now_ms,
-                        frequency=1,
-                    )
-                    self._rate_limit_records[source_key] = record
-                    return ConcurrentRateLease(record)
-
-            wait_ms = 0
-            with record.lock:
-                try:
-                    if not record.is_concurrent:
-                        limit_ms = int(concurrent_rate)
-                        if record.frequency > 0:
-                            wait_ms = limit_ms
-                        else:
-                            next_time = record.time_ms + limit_ms
-                            if now_ms >= next_time:
-                                record.time_ms = now_ms
-                                record.frequency = 1
-                                return ConcurrentRateLease(record)
-                            wait_ms = next_time - now_ms
-                    else:
-                        max_count = int(concurrent_rate[:rate_index])
-                        window_ms = int(concurrent_rate[rate_index + 1:])
-                        next_time = record.time_ms + window_ms
-                        if now_ms >= next_time:
-                            record.time_ms = now_ms
-                            record.frequency = 1
-                            return ConcurrentRateLease(record)
-                        if record.frequency > max_count:
-                            wait_ms = next_time - now_ms
-                        else:
-                            record.frequency += 1
-                            return ConcurrentRateLease(record)
-                except Exception:
-                    return ConcurrentRateLease(None)
-
-            if wait_ms > 0:
-                time.sleep(wait_ms / 1000.0)
+        return acquire_rate_limit(source, self._rate_limit_records, self._rate_limit_lock)
 
 
 _DEFAULT_ENGINE = LegadoEngine()
@@ -312,5 +203,5 @@ def get_default_engine() -> LegadoEngine:
     return _DEFAULT_ENGINE
 
 
-def resolve_engine(engine: Optional[LegadoEngine] = None) -> LegadoEngine:
+def resolve_engine(engine: LegadoEngine | None = None) -> LegadoEngine:
     return engine or _DEFAULT_ENGINE
