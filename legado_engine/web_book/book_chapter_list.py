@@ -2,7 +2,7 @@
 BookChapterList – 1:1 port of BookChapterList.kt.
 """
 from __future__ import annotations
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from ..engine import resolve_engine
@@ -87,14 +87,12 @@ def analyze_chapter_list(
                 pass
             return []
 
-        workers = min(len(next_urls), 8)
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="legado-toc") as pool:
-            futures = {pool.submit(_fetch_toc_page, u): u for u in next_urls}
-            for fut in as_completed(futures):
-                try:
-                    chapter_list.extend(fut.result())
-                except Exception:
-                    pass
+        futures = {engine.executor.submit(_fetch_toc_page, u): u for u in next_urls}
+        for fut in as_completed(futures):
+            try:
+                chapter_list.extend(fut.result())
+            except Exception:
+                pass
 
     if not chapter_list:
         raise ValueError("Chapter list is empty")

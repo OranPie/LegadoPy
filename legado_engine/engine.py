@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any, Callable, Iterable, List
 
 import requests as _requests
 from requests.adapters import HTTPAdapter
@@ -56,6 +58,12 @@ class LegadoEngine:
         self._rate_limit_lock = threading.Lock()
         self._http_sessions: dict[str, _requests.Session] = {}
         self._http_sessions_lock = threading.Lock()
+        # Shared executor for all engine I/O work (search, TOC, parse)
+        _workers = min(32, (os.cpu_count() or 1) * 4)
+        self.executor = ThreadPoolExecutor(
+            max_workers=_workers,
+            thread_name_prefix="legado",
+        )
         token = uuid.uuid4().hex
         self.device_id = token
         self.android_id = token[:16]
@@ -79,6 +87,18 @@ class LegadoEngine:
                 session.proxies = {"http": proxy, "https": proxy}
             self._http_sessions[key] = session
             return session
+
+    def submit(self, fn: Callable, *args: Any, **kwargs: Any) -> Future:
+        """Submit a callable to the shared engine thread pool."""
+        return self.executor.submit(fn, *args, **kwargs)
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Release all engine resources (executor, HTTP sessions)."""
+        self.executor.shutdown(wait=wait)
+        with self._http_sessions_lock:
+            for sess in self._http_sessions.values():
+                sess.close()
+            self._http_sessions.clear()
 
     def set_replace_rules(self, rules: Iterable[Any]) -> None:
         self.replace_rules = list(rules)

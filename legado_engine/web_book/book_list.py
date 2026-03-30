@@ -3,7 +3,6 @@ BookList – 1:1 port of BookList.kt (search & explore result parsing).
 """
 from __future__ import annotations
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, List, Optional, TYPE_CHECKING
 
 from ..engine import resolve_engine
@@ -107,9 +106,8 @@ def analyze_book_list(
             )
 
         if len(collections) >= _PARALLEL_THRESHOLD:
-            workers = min(len(collections), 8)
-            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="legado-parse") as pool:
-                parsed = list(pool.map(_parse_item, collections))
+            futures = [engine.executor.submit(_parse_item, item) for item in collections]
+            parsed = [f.result() for f in futures]
         else:
             parsed = [_parse_item(item) for item in collections]
 

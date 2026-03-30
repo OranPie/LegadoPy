@@ -5,10 +5,14 @@ import hashlib
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from legado_engine import Book, BookChapter, BookSource, get_content
+
+# Shared pool for background chapter preloads
+_preload_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="legado-preload")
 
 
 DEFAULT_READER_SETTINGS: Dict[str, Any] = {
@@ -268,12 +272,10 @@ class ReaderState:
             if preload_key in self._active_preloads:
                 return
             self._active_preloads.add(preload_key)
-        thread = threading.Thread(
-            target=self._preload_worker,
-            args=(preload_key, source_data, book_data, chapter_data, current_index, count),
-            daemon=True,
+        _preload_pool.submit(
+            self._preload_worker,
+            preload_key, source_data, book_data, chapter_data, current_index, count,
         )
-        thread.start()
 
     def _preload_worker(
         self,

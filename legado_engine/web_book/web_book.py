@@ -4,7 +4,7 @@ Mirrors WebBook.kt: search, getBookInfo, getChapterList, getContent.
 """
 from __future__ import annotations
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from typing import Callable, List, Optional, TYPE_CHECKING
 
 from ..analyze.analyze_url import AnalyzeUrl
@@ -427,11 +427,11 @@ def search_books_parallel(
     page: int = 1,
     filter_fn: Optional[Callable[[str, str], bool]] = None,
     engine=None,
-    max_workers: int = 8,
 ) -> List[SearchBook]:
     """
     Search multiple book sources concurrently and return merged results.
     Sources that raise exceptions are silently skipped.
+    Concurrency is controlled by the engine's shared executor.
     """
     engine = resolve_engine(engine)
     if not sources:
@@ -444,14 +444,12 @@ def search_books_parallel(
             return []
 
     all_results: List[SearchBook] = []
-    workers = min(len(sources), max_workers)
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="legado-search") as pool:
-        futures = {pool.submit(_search_one, src): src for src in sources}
-        for fut in as_completed(futures):
-            try:
-                all_results.extend(fut.result())
-            except Exception:
-                pass
+    futures = {engine.executor.submit(_search_one, src): src for src in sources}
+    for fut in as_completed(futures):
+        try:
+            all_results.extend(fut.result())
+        except Exception:
+            pass
 
     # De-duplicate by bookUrl while preserving order
     seen: set = set()
