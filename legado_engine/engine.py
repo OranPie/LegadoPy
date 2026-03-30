@@ -49,6 +49,7 @@ class LegadoEngine:
         self.cookie_store = CookieStore()
         self.cache = CacheStore()
         self.replace_rules: list[Any] = []
+        self._sorted_rules_cache: list[Any] | None = None
         self.rss_sources: dict[str, Any] = {}
         self._text_cache: dict[str, dict[str, Any]] = {}
         self._rate_limit_records: dict[str, Any] = {}
@@ -81,9 +82,11 @@ class LegadoEngine:
 
     def set_replace_rules(self, rules: Iterable[Any]) -> None:
         self.replace_rules = list(rules)
+        self._sorted_rules_cache = None
 
     def add_replace_rule(self, rule: Any) -> None:
         self.replace_rules.append(rule)
+        self._sorted_rules_cache = None
 
     def register_rss_sources(self, sources: Iterable[Any]) -> None:
         for source in sources:
@@ -122,10 +125,12 @@ class LegadoEngine:
         )
 
     def _iter_sorted_rules(self) -> list[Any]:
-        return sorted(
-            self.replace_rules,
-            key=lambda rule: (getattr(rule, "order", 0), getattr(rule, "id", 0)),
-        )
+        if self._sorted_rules_cache is None:
+            self._sorted_rules_cache = sorted(
+                self.replace_rules,
+                key=lambda rule: (getattr(rule, "order", 0), getattr(rule, "id", 0)),
+            )
+        return self._sorted_rules_cache
 
     def apply_replace_rules(
         self,

@@ -42,6 +42,12 @@ _JS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Pre-compiled byte patterns for encoding detection in HTTP responses
+_CHARSET_PATTERNS = (
+    re.compile(rb'charset=["\']?\s*([a-z0-9._-]+)'),
+    re.compile(rb'encoding=["\']?\s*([a-z0-9._-]+)'),
+)
+
 # Default User-Agent
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -448,12 +454,8 @@ class AnalyzeUrl:
             return header_encoding
         sample = body_bytes[:4096]
         lowered = sample.lower()
-        meta_patterns = (
-            rb'charset=["\']?\s*([a-z0-9._-]+)',
-            rb'encoding=["\']?\s*([a-z0-9._-]+)',
-        )
-        for pattern in meta_patterns:
-            match = re.search(pattern, lowered)
+        for pattern in _CHARSET_PATTERNS:
+            match = pattern.search(lowered)
             if match:
                 try:
                     return match.group(1).decode("ascii", errors="ignore") or "utf-8"
@@ -566,11 +568,11 @@ class AnalyzeUrl:
 
         timeout = (self._call_timeout or 30000) / 1000.0
         last_exc: Optional[Exception] = None
+        sess = self._build_session()
 
         with self._engine.acquire_rate_limit(self._source):
             for attempt in range(max(1, self._retry + 1)):
                 try:
-                    sess = self._build_session()
                     if self._method == "POST":
                         if self._encoded_form:
                             # parse form fields into dict

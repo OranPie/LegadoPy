@@ -9,13 +9,10 @@ from .analyze.analyze_url import StrResponse
 class JsHeaders:
     def __init__(self, headers: Optional[Dict[str, str]] = None) -> None:
         self._headers = {str(k): str(v) for k, v in (headers or {}).items()}
+        self._lower: Dict[str, str] = {k.lower(): v for k, v in self._headers.items()}
 
     def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        key_lower = str(key).lower()
-        for header_key, value in self._headers.items():
-            if header_key.lower() == key_lower:
-                return value
-        return default
+        return self._lower.get(str(key).lower(), default)
 
     def to_dict(self) -> Dict[str, str]:
         return dict(self._headers)

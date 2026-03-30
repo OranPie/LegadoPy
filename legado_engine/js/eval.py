@@ -35,6 +35,9 @@ except Exception:
 from .extensions import JsExtensions  # noqa: E402
 from .execjs_runner import _run_execjs  # noqa: E402
 
+# Cache for jsLib+script concatenation, keyed by (source identity, script)
+_jslib_cache: dict[tuple[int, str], str] = {}
+
 
 # ---------------------------------------------------------------------------
 # eval_js – main entry point
@@ -64,7 +67,12 @@ def eval_js(
     )
     engine = resolve_engine(engine)
     if source and hasattr(source, "jsLib") and source.jsLib:
-        js_str = f"{source.jsLib}\n\n{js_str}"
+        cache_key = (id(source), js_str)
+        cached = _jslib_cache.get(cache_key)
+        if cached is None:
+            cached = f"{source.jsLib}\n\n{js_str}"
+            _jslib_cache[cache_key] = cached
+        js_str = cached
 
     ctx: Dict[str, Any] = {
         "result": result,

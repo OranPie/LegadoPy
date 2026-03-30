@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import json
 import re
 import threading
 import urllib.parse
@@ -10,6 +11,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+
+import requests as _requests
 
 from ..engine import resolve_engine
 from ..exceptions import UnsupportedHeadlessOperation
@@ -50,8 +53,7 @@ class JsExtensions:
 
     def _default_ajax(self, url: str) -> Optional[str]:
         try:
-            import requests  # type: ignore[import]
-            r = requests.get(url, timeout=15)
+            r = _requests.get(url, timeout=15)
             r.raise_for_status()
             return r.text
         except Exception:
@@ -71,7 +73,6 @@ class JsExtensions:
         header_map = None
         if header:
             try:
-                import json
                 parsed = json.loads(header)
                 if isinstance(parsed, dict):
                     header_map = {str(k): str(v) for k, v in parsed.items()}
@@ -374,11 +375,9 @@ class JsExtensions:
         headers: Optional[Dict[str, str]] = None,
         body: Optional[str] = None,
     ) -> Any:
-        import requests
-
         from ..pipeline import JsBody, JsHeaders
 
-        session = requests.Session()
+        session = self.engine.get_http_session("")
         request_headers = {str(k): str(v) for k, v in (headers or {}).items()}
         try:
             response = session.request(
@@ -449,8 +448,6 @@ class JsExtensions:
     def head(self, url: str, headers: Dict[str, str]) -> Any:  # noqa: N802
         if isinstance(headers, str):
             try:
-                import json
-
                 headers = json.loads(headers) or {}
             except Exception:
                 headers = {}
@@ -459,8 +456,6 @@ class JsExtensions:
     def post(self, url: str, body: str, headers: Dict[str, str]) -> Any:
         if isinstance(headers, str):
             try:
-                import json
-
                 headers = json.loads(headers) or {}
             except Exception:
                 headers = {}
