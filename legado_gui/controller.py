@@ -4,7 +4,7 @@ import copy
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from legado_engine import (
     Book,
@@ -211,17 +211,26 @@ class ReaderController:
         self.state.remember_book(source, hydrated)
         return hydrated
 
-    def load_chapters(self) -> List[BookChapter]:
+    def load_chapters(
+        self,
+        chapter_batch_fn: Callable[[List[BookChapter]], None] | None = None,
+    ) -> List[BookChapter]:
         source = self._require_source()
         if not self.session.book:
             raise ValueError("No active book")
         cache_key = self._chapter_cache_key(source, self.session.book)
         chapters = self._chapter_cache.get(cache_key)
         if chapters is None:
-            chapters = get_chapter_list(source, self.session.book)
+            chapters = get_chapter_list(
+                source, self.session.book, chapter_batch_fn=chapter_batch_fn
+            )
             self._chapter_cache[cache_key] = copy.deepcopy(chapters)
         else:
+            # Serve from cache but still stream a single batch so callers
+            # don't need to special-case the cached path.
             chapters = copy.deepcopy(chapters)
+            if chapter_batch_fn:
+                chapter_batch_fn(list(chapters))
         self.session.chapters = chapters
         return chapters
 

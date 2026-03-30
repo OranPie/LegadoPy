@@ -2097,20 +2097,27 @@ class ChapterListScreen(Screen):
         def _on_progress(done: int, total: int) -> None:
             self.app.call_from_thread(self._update_ch_progress, done, total)
 
+        def _on_batch(batch: list) -> None:
+            self.app.call_from_thread(self._append_chapter_batch, batch)
+
         try:
-            chapters = get_chapter_list(self._source, self._book, progress_fn=_on_progress)
+            chapters = get_chapter_list(
+                self._source, self._book,
+                progress_fn=_on_progress,
+                chapter_batch_fn=_on_batch,
+            )
         except Exception as e:
             self.app.call_from_thread(self.app.error, f"目录加载失败：{e}")
             chapters = []
         self._chapters = chapters
         self.app.call_from_thread(self._populate, chapters)
 
-    def _update_ch_progress(self, done: int, total: int) -> None:
-        try:
-            self.query_one("#ch-progress", ProgressBar).update(progress=done, total=total)
-            self.query_one("#ch-progress-label", Label).update(f"  {done}/{total}")
-        except Exception:
-            pass
+    def _append_chapter_batch(self, batch: list) -> None:
+        """Stream-append a page-worth of chapters while loading is in progress."""
+        tbl: DataTable = self.query_one("#ch-table", DataTable)
+        for ch in batch:
+            row_num = tbl.row_count + 1
+            tbl.add_row(str(row_num), ch.title or "", "★" if ch.isVip else "", ch.url or "")
 
     def _populate(self, chapters: List[BookChapter]) -> None:
         self.query_one("#ch-loading").display = False
@@ -2394,13 +2401,27 @@ class BookScreen(Screen):
         def _on_progress(done: int, total: int) -> None:
             self.app.call_from_thread(self._update_ch_progress, done, total)
 
+        def _on_batch(batch: list) -> None:
+            self.app.call_from_thread(self._append_chapter_batch, batch)
+
         try:
-            chapters = get_chapter_list(self._source, self._book, progress_fn=_on_progress)
+            chapters = get_chapter_list(
+                self._source, self._book,
+                progress_fn=_on_progress,
+                chapter_batch_fn=_on_batch,
+            )
         except Exception as e:
             self.app.call_from_thread(self.app.error, f"目录加载失败：{e}")
             chapters = []
         self._chapters = chapters
         self.app.call_from_thread(self._populate, chapters)
+
+    def _append_chapter_batch(self, batch: list) -> None:
+        """Stream-append a page-worth of chapters while loading is in progress."""
+        tbl: DataTable = self.query_one("#ch-table", DataTable)
+        for ch in batch:
+            row_num = tbl.row_count + 1
+            tbl.add_row(str(row_num), ch.title or "", "★" if ch.isVip else "", ch.url or "")
 
     def _update_ch_progress(self, done: int, total: int) -> None:
         try:

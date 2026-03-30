@@ -653,9 +653,12 @@ class BookPage(QWidget):
     refresh_toc_requested = Signal()
     back_requested = Signal()
     add_to_shelf_requested = Signal()
+    # Emitted from worker thread to append a batch of chapters incrementally
+    chapters_batch_ready = Signal(object)  # List[BookChapter]
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self.chapters_batch_ready.connect(self._on_chapters_batch)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -740,6 +743,19 @@ class BookPage(QWidget):
         self._chapter_list.clear()
         for ch in chapters:
             self._chapter_list.addItem(f"{ch.index + 1:>4}. {ch.title}")
+        self._btn_refresh_toc.setEnabled(True)
+
+    @Slot(object)
+    def _on_chapters_batch(self, batch: List[BookChapter]) -> None:
+        """Incrementally append a batch of chapters; remove placeholder if present."""
+        if (
+            self._chapter_list.count() == 1
+            and self._chapter_list.item(0).text() == "Loading chapters…"
+        ):
+            self._chapter_list.clear()
+        for ch in batch:
+            row_num = self._chapter_list.count() + 1
+            self._chapter_list.addItem(f"{row_num:>4}. {ch.title}")
 
     def set_chapters_loading(self) -> None:
         self._chapter_list.clear()
@@ -1210,9 +1226,18 @@ class LegadoApp(QMainWindow):
         self._book_page.set_chapters_loading()
         self._show_stage(1)
         self._sidebar.refresh_bookshelf(self._controller.list_bookshelf_entries())
+
+        book_page = self._book_page
+
+        def _load_with_stream() -> List[BookChapter]:
+            def _on_batch(batch: list) -> None:
+                book_page.chapters_batch_ready.emit(batch)
+
+            return self._controller.load_chapters(chapter_batch_fn=_on_batch)
+
         self._run_task(
             f'Loading chapters for "{book.name or "book"}"…',
-            self._controller.load_chapters,
+            _load_with_stream,
             self._after_chapters_loaded,
         )
 
@@ -1253,11 +1278,15 @@ class LegadoApp(QMainWindow):
         if not self._controller.session.book:
             return
         self._book_page.set_chapters_loading()
-        self._run_task(
-            "Refreshing TOC…",
-            self._controller.load_chapters,
-            self._after_chapters_loaded,
-        )
+        book_page = self._book_page
+
+        def _reload_with_stream() -> List[BookChapter]:
+            def _on_batch(batch: list) -> None:
+                book_page.chapters_batch_ready.emit(batch)
+
+            return self._controller.load_chapters(chapter_batch_fn=_on_batch)
+
+        self._run_task("Refreshing TOC…", _reload_with_stream, self._after_chapters_loaded)
 
     @Slot()
     def _open_prev_chapter(self) -> None:

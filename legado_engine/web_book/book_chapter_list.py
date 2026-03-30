@@ -27,10 +27,14 @@ def analyze_chapter_list(
     body: Optional[str],
     engine=None,
     progress_fn: Callable[[int, int], None] | None = None,
+    chapter_batch_fn: Callable[[List["BookChapter"]], None] | None = None,
 ) -> List[BookChapter]:
     """
     Mirrors BookChapterList.analyzeChapterList() (outer form).
     Handles multi-page TOC by following nextTocUrl.
+
+    chapter_batch_fn is fired with each page's chapters as soon as they are
+    parsed, enabling incremental display before the full list is returned.
     """
     engine = resolve_engine(engine)
     if body is None:
@@ -55,6 +59,8 @@ def analyze_chapter_list(
         engine=engine, progress_fn=progress_fn,
     )
     chapter_list.extend(chapters)
+    if chapter_batch_fn and chapters:
+        chapter_batch_fn(list(chapters))
 
     # Single next-page chain
     if len(next_urls) == 1:
@@ -73,6 +79,8 @@ def analyze_chapter_list(
                     book, next_url, res.url, res.body, toc_rule, list_rule, book_source, engine=engine
                 )
                 chapter_list.extend(more_chapters)
+                if chapter_batch_fn and more_chapters:
+                    chapter_batch_fn(list(more_chapters))
                 next_url = next_urls2[0] if next_urls2 else ""
             else:
                 break
@@ -95,7 +103,10 @@ def analyze_chapter_list(
         futures = {engine.executor.submit(_fetch_toc_page, u): u for u in next_urls}
         for fut in as_completed(futures):
             try:
-                chapter_list.extend(fut.result())
+                batch = fut.result()
+                chapter_list.extend(batch)
+                if chapter_batch_fn and batch:
+                    chapter_batch_fn(list(batch))
             except Exception:
                 pass
 
