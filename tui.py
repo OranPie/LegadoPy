@@ -2680,40 +2680,51 @@ class BookInfoScreen(Screen):
         b = self._book
         self.sub_title = b.name or "书籍详情"
 
-        # Build a rich Text renderable
         renderable = Text()
-        renderable.append(f"  {b.name or '未命名'}\n", style="bold cyan")
-        renderable.append("  " + "─" * 40 + "\n\n", style="dim")
+        W = 64
+        box_top = "┌" + "─" * (W - 2) + "┐"
+        box_mid = "├" + "─" * (W - 2) + "┤"
+        box_bot = "└" + "─" * (W - 2) + "┘"
 
-        fields = [
-            ("作者", b.author, "green"),
-            ("分类", b.kind, "yellow"),
-            ("字数", b.wordCount, ""),
-            ("最新", b.latestChapterTitle, ""),
-        ]
-        for label, value, style in fields:
-            renderable.append(f"  {label}：", style="bold")
-            renderable.append(f"{value or '—'}\n", style=style)
+        renderable.append(f"\n  {box_top}\n", style="dim")
 
-        renderable.append("\n")
-        renderable.append("  简介\n", style="bold underline")
-        renderable.append("  " + "─" * 40 + "\n", style="dim")
+        title_line = f"  │  {b.name or '未命名'}"
+        renderable.append(title_line.ljust(W + 2) + "│\n", style="bold cyan")
+
+        author_line = f"  │  作者：{b.author or '—'}  分类：{b.kind or '—'}"
+        renderable.append(author_line.ljust(W + 2) + "│\n", style="green")
+
+        stats_line = f"  │  字数：{b.wordCount or '—'}  最新：{b.latestChapterTitle or '—'}"
+        renderable.append(stats_line.ljust(W + 2) + "│\n", style="")
+
+        renderable.append(f"  {box_mid}\n", style="dim")
+        renderable.append("  │  简介\n", style="bold")
+
         intro = (b.intro or "暂无简介").strip()
         for para in intro.split("\n"):
-            wrapped = textwrap.fill(para.strip(), width=72, initial_indent="  ", subsequent_indent="  ")
-            renderable.append(wrapped + "\n\n", style="")
+            para = para.strip()
+            if not para:
+                renderable.append("  │\n", style="dim")
+                continue
+            for chunk in textwrap.wrap(para, width=W - 6) or [""]:
+                renderable.append(f"  │    {chunk}\n", style="")
 
-        renderable.append("  " + "─" * 40 + "\n", style="dim")
-        renderable.append("  详情：", style="bold dim")
-        renderable.append(f"{b.bookUrl}\n", style="blue dim")
-        renderable.append("  目录：", style="bold dim")
+        renderable.append(f"  {box_mid}\n", style="dim")
+        renderable.append("  │  ", style="dim")
+        renderable.append("书源：", style="bold dim")
+        renderable.append(f"{b.bookUrl or '—'}\n", style="blue dim")
+        renderable.append("  │  ", style="dim")
+        renderable.append("目录：", style="bold dim")
         renderable.append(f"{b.tocUrl or '—'}\n", style="blue dim")
 
-        # Check if already on shelf
         entry = self.app.reader_state.get_bookshelf_entry(self._source, b)
         if entry:
             progress = format_progress(entry)
-            renderable.append(f"\n  [已在书架] 进度：{progress}\n", style="green")
+            renderable.append("  │  ", style="dim")
+            renderable.append(f"[已在书架] 进度：{progress}", style="green")
+            renderable.append("\n", style="")
+
+        renderable.append(f"  {box_bot}\n", style="dim")
 
         self.query_one("#info-content", Static).update(renderable)
 
@@ -3651,17 +3662,15 @@ class ReaderScreen(Screen):
             chapter_title = chapter_title[:40] + "…"
 
         self.query_one("#nav-label", Label).update(
-            f"[dim]第{idx + 1}/{total}章[/dim]  "
-            f"[bold]{chapter_title}[/bold]"
+            f"[dim]第 {idx + 1}/{total} 章  {chapter_pct}%[/dim]"
             f"{search_note}"
         )
         self.query_one("#btn-prev").disabled = (idx == 0)
         self.query_one("#btn-next").disabled = (idx >= total - 1)
 
-        # Progress bar label — show mini-bar + percentage
+        # Progress bar label — show book name and chapter title
         self.query_one("#reader-progress-label", Label).update(
-            f"[dim]{theme_icon} {self._book.name or ''} · "
-            f"{bar} {chapter_pct}%[/dim]"
+            f"[dim]{theme_icon} {self._book.name or ''} · {chapter_title}[/dim]"
         )
 
     def action_reload(self) -> None:
@@ -4556,6 +4565,36 @@ BookScreen #info-scroll {
 }
 #history-table {
     height: 1fr;
+}
+
+/* ─── Source Test ────────────────────────────────────────────────────── */
+#source-test-body {
+    padding: 0 1;
+}
+#source-test-title {
+    padding: 1;
+    text-style: bold;
+}
+#source-test-keyword-row {
+    height: 3;
+    align: left middle;
+}
+#source-test-keyword-row Label {
+    padding: 0 1;
+    width: auto;
+}
+#source-test-results {
+    height: 1fr;
+    padding: 1 2;
+    border: round $panel-darken-1;
+    margin: 1 0;
+}
+#source-test-footer {
+    height: 3;
+    align: left middle;
+}
+#source-test-footer Button {
+    margin-right: 1;
 }
 """ + _build_theme_css()
 
