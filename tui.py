@@ -77,6 +77,14 @@ from reader_state import ReaderState
 # is applied to the reader scroll container; the APP_CSS block generates the
 # rules automatically.
 
+# Book source type labels (mirrors BookSourceType enum in Kotlin)
+BOOK_SOURCE_TYPE_LABELS: Dict[int, str] = {
+    0: "📖 文本",
+    1: "🔊 音频",
+    2: "🖼 图片",
+    3: "📄 文件",
+}
+
 READER_THEMES: Dict[str, Dict[str, str]] = {
     "day": {
         "label": "日间",
@@ -259,7 +267,7 @@ class SourcePickerScreen(ModalScreen):
 
     def on_mount(self) -> None:
         table: DataTable = self.query_one("#source-picker-table", DataTable)
-        table.add_columns("#", "名称", "分组", "搜索", "发现", "备注", "URL")
+        table.add_columns("#", "名称", "分组", "类型", "搜索", "发现", "备注", "URL")
         self._apply_filter("")
 
     def action_focus_filter(self) -> None:
@@ -284,6 +292,7 @@ class SourcePickerScreen(ModalScreen):
                 str(idx),
                 f"{enabled_mark} {source.bookSourceName or ''}",
                 source.bookSourceGroup or "—",
+                BOOK_SOURCE_TYPE_LABELS.get(source.bookSourceType or 0, "📖"),
                 "✓" if source.searchUrl else "✗",
                 "✓" if source.exploreUrl else "✗",
                 comment_preview,
@@ -383,6 +392,7 @@ class SourceLoaderScreen(ModalScreen):
             return
         # Store all sources in the app for change-source feature
         self.app.all_sources = sources
+        self.app.reader_state.set_all_sources(sources)
         if len(sources) == 1:
             self.dismiss(sources[0])
             return
@@ -2856,6 +2866,11 @@ class BookScreen(Screen):
             renderable.append(f"  {label}：", style="bold")
             renderable.append(f"{value or '—'}\n", style=style)
 
+        src_type = getattr(self._source, "bookSourceType", 0) or 0
+        type_label = BOOK_SOURCE_TYPE_LABELS.get(src_type, "📖 文本")
+        renderable.append("  书源：", style="bold")
+        renderable.append(f"{type_label}  [dim]{self._source.bookSourceName or ''}[/dim]\n")
+
         renderable.append("\n")
         renderable.append("  简介\n", style="bold underline")
         renderable.append("  " + "─" * 40 + "\n", style="dim")
@@ -4078,7 +4093,8 @@ class LegadoApp(App):
         super().__init__()
         self.reader_state = ReaderState()
         self.source: Optional[BookSource] = source or self.reader_state.get_current_source()
-        self.all_sources: List[BookSource] = []  # all loaded sources in current session
+        # Restore all_sources from last session so change-source / multi-search work immediately
+        self.all_sources: List[BookSource] = self.reader_state.get_all_sources()
 
     def info(self, message: str) -> None:
         self.notify(message, severity="information")
@@ -4127,6 +4143,14 @@ class LegadoApp(App):
         self.push_screen(BookshelfScreen())
         if self.source:
             self.set_source(self.source, persist=True, notify=True)
+
+    def on_unmount(self) -> None:
+        """Final save on exit — flush any state the reader/app has accumulated."""
+        if self.all_sources:
+            try:
+                self.reader_state.set_all_sources(self.all_sources)
+            except Exception:
+                pass
 
     def set_source(
         self,

@@ -65,6 +65,9 @@ class ReaderState:
         data.setdefault("bookmarks", [])
         if not isinstance(data["bookmarks"], list):
             data["bookmarks"] = []
+        data.setdefault("all_sources", [])
+        if not isinstance(data["all_sources"], list):
+            data["all_sources"] = []
         return data
 
     def _save(self) -> None:
@@ -212,6 +215,24 @@ class ReaderState:
     def clear_current_source(self) -> None:
         with self._lock:
             self._state["current_source"] = None
+            self._save()
+
+    def get_all_sources(self) -> List["BookSource"]:
+        """Load all previously saved sources (for multi-source search / change-source)."""
+        raw_list = self._state.get("all_sources") or []
+        from legado_engine.models.book_source import BookSource
+        sources: List["BookSource"] = []
+        for item in raw_list:
+            try:
+                sources.append(BookSource.from_dict(item))
+            except Exception:
+                pass
+        return sources
+
+    def set_all_sources(self, sources: List["BookSource"]) -> None:
+        """Persist the full list of loaded sources."""
+        with self._lock:
+            self._state["all_sources"] = [s.to_dict() for s in sources]
             self._save()
 
     def list_bookshelf(self) -> List[Dict[str, Any]]:

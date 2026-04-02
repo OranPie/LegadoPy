@@ -11,6 +11,7 @@ Commands:
   categories List discover/category buttons from a source
   auth      Inspect or submit source login/auth forms
   sources   List / validate book sources from a JSON array file
+  reviews   Fetch paragraph/book reviews (ruleReview)
 
 Usage examples:
   python cli.py search  source.json "斗破苍穹"
@@ -23,6 +24,8 @@ Usage examples:
   python cli.py auth source.json --field 用户名=demo --field 密码=secret
   python cli.py auth source.json --action "register()"
   python cli.py sources    sources_array.json
+  python cli.py reviews    source.json "https://book.url"
+  python cli.py reviews    source.json "https://book.url" "https://chapter.url"
 """
 from __future__ import annotations
 
@@ -400,6 +403,44 @@ def cmd_sources(args):
     console.print(t)
 
 
+def cmd_reviews(args):
+    """Fetch paragraph/book reviews from a source's ruleReview."""
+    src = load_source(args.source)
+    b = Book()
+    b.bookUrl = args.book_url
+    b.origin = src.bookSourceUrl
+
+    ch: Optional[BookChapter] = None
+    if args.chapter_url:
+        ch = BookChapter()
+        ch.url = args.chapter_url
+        ch.bookUrl = args.book_url
+
+    from legado_engine import get_reviews
+    with spinner("Fetching reviews…") as p:
+        p.add_task("", total=None)
+        reviews = get_reviews(src, b, chapter=ch, page=args.page)
+
+    if not reviews:
+        console.print("[yellow]No reviews found (source may not have ruleReview or no results).[/yellow]")
+        return
+
+    t = Table(title=f"Reviews ({len(reviews)})", box=box.ROUNDED)
+    t.add_column("#", style="dim", width=4)
+    t.add_column("Avatar", width=12)
+    t.add_column("Time", width=16)
+    t.add_column("Content", min_width=40)
+
+    for i, r in enumerate(reviews, 1):
+        t.add_row(
+            str(i),
+            r.get("avatar", "")[:12],
+            r.get("postTime", ""),
+            r.get("content", ""),
+        )
+    console.print(t)
+
+
 # ─── argument parser ─────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -477,6 +518,12 @@ def build_parser() -> argparse.ArgumentParser:
     psr = sub.add_parser("sources", help="List sources from a JSON array file")
     psr.add_argument("file", help="Path to sources JSON array file")
 
+    prev = sub.add_parser("reviews", help="Fetch book/chapter reviews (ruleReview)")
+    prev.add_argument("source", help="Path to BookSource JSON file")
+    prev.add_argument("book_url", help="Book URL")
+    prev.add_argument("chapter_url", nargs="?", default=None, help="Chapter URL (optional)")
+    prev.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
+
     return p
 
 
@@ -493,6 +540,7 @@ def main():
         "auth":       cmd_auth,
         "login":      cmd_auth,
         "sources":    cmd_sources,
+        "reviews":    cmd_reviews,
     }
     try:
         dispatch[args.command](args)
