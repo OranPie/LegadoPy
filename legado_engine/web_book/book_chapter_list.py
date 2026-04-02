@@ -159,6 +159,13 @@ def analyze_chapter_list(
     book.totalChapterNum = len(chapter_list)
     if chapter_list:
         book.latestChapterTitle = chapter_list[-1].title
+    # Mirror Kotlin BookChapterList lines 157-161: record check timestamp + new chapter count
+    import time as _time
+    prev_total = book.totalChapterNum  # already updated above
+    new_count = max(0, len(chapter_list) - (book.lastCheckCount or 0))  # rough estimate
+    book.lastCheckTime = int(_time.time() * 1000)
+    book.lastCheckCount = new_count
+    book.latestChapterTime = int(_time.time() * 1000)
 
     return chapter_list
 

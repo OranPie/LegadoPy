@@ -9,6 +9,21 @@ from typing import Any
 from ..debug import snapshot_book, trace_event
 
 
+class BookType:
+    """Mirrors BookType.kt — bitmask flags for book type classification."""
+    text = 0b1000            # 8  – text book
+    updateError = 0b10000   # 16 – update failed
+    audio = 0b100000        # 32 – audio book
+    image = 0b1000000       # 64 – image/comic book
+    webFile = 0b10000000    # 128 – download-only site
+    local = 0b100000000     # 256 – local file
+    archive = 0b1000000000  # 512 – extracted from archive
+    notShelf = 0b10000000000  # 1024 – temporary reading, not on shelf
+    allBookType = text | image | audio | webFile
+    localTag = "loc_book"
+    webDavTag = "webDav::"
+
+
 @dataclass
 class RuleData:
     """Mirrors RuleDataInterface + RuleData.kt – holds per-source variable state."""
@@ -148,7 +163,32 @@ class Book(RuleData):
 
     @property
     def is_web_file(self) -> bool:
-        return self.type == 3
+        return bool(self.type & BookType.webFile)
+
+    @property
+    def is_audio(self) -> bool:
+        return bool(self.type & BookType.audio)
+
+    @property
+    def is_image(self) -> bool:
+        return bool(self.type & BookType.image)
+
+    @property
+    def is_local(self) -> bool:
+        return bool(self.type & BookType.local)
+
+    def get_book_type(self, source_type: int) -> int:
+        """
+        Derive BookType bitmask from BookSourceType (mirrors Kotlin Book.getBookType()).
+        BookSourceType: 0=text, 1=audio, 2=image, 3=webFile
+        """
+        if source_type == 1:
+            return BookType.audio
+        if source_type == 2:
+            return BookType.image
+        if source_type == 3:
+            return BookType.webFile
+        return BookType.text
 
 
 @dataclass
@@ -172,16 +212,19 @@ class BookChapter(RuleData):
         if self.effectiveReplaceRules is None:
             self.effectiveReplaceRules = []
 
-    def get_display_title(self, replace_rules=None, use_replace=True) -> str:
-        if not use_replace:
-            return self.title
-        if replace_rules:
-            result = self.title
+    def get_display_title(self, replace_rules=None, use_replace=True, chinese_convert: int = 0) -> str:
+        result = self.title
+        if use_replace and replace_rules:
             for rule in replace_rules:
                 if getattr(rule, "applies_to", None) and rule.applies_to([], is_title=True, is_content=False):
                     result = rule.apply(result)
-            return result
-        return self.title
+        if chinese_convert:
+            try:
+                from ..utils.content_help import chinese_convert as _cc
+                result = _cc(result, chinese_convert)
+            except Exception:
+                pass
+        return result
 
     def get_file_name(self, suffix: str = "") -> str:
         import hashlib
@@ -219,6 +262,23 @@ class SearchBook(RuleData):
     tocUrl: str = ""
     infoHtml: str | None = None
     tocHtml: str | None = None
+    # Mirrors SearchBook.origins: LinkedHashSet<String> — tracks all sources having this book
+    origins: list = field(default_factory=list)
+
+    def add_origin(self, origin_url: str) -> None:
+        """Add a source origin to this book's origin set (mirrors SearchBook.addOrigin)."""
+        if origin_url and origin_url not in self.origins:
+            self.origins.append(origin_url)
+
+    def release_html_data(self) -> None:
+        """Free cached HTML to reduce memory usage (mirrors SearchBook.releaseHtmlData)."""
+        self.infoHtml = None
+        self.tocHtml = None
+
+    @property
+    def origin_count(self) -> int:
+        """Number of sources that have this book."""
+        return max(1, len(self.origins))
 
     def to_book(self) -> Book:
         b = Book(

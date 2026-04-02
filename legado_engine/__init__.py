@@ -23,7 +23,7 @@ from .models.book_source import (
 from .models.replace_rule import ReplaceRule
 from .models.rss_source import RssSource, RssArticle
 from .models.review import ReviewEntry
-from .models.book import Book, BookChapter, SearchBook, RuleData
+from .models.book import Book, BookChapter, SearchBook, RuleData, BookType
 
 # ── Engine & Cache ────────────────────────────────────────────────────────────
 from .cache import CacheStore

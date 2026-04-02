@@ -527,13 +527,50 @@ def search_books_parallel(
                 remaining.cancel()
             break
 
-    # De-duplicate by bookUrl while preserving order
-    seen: set = set()
-    deduped: List[SearchBook] = []
-    for sb in all_results:
-        if sb.bookUrl not in seen:
-            seen.add(sb.bookUrl)
-            deduped.append(sb)
+    return _merge_and_rank_search_results(all_results, key)
+
+
+def _merge_and_rank_search_results(results: List[SearchBook], key: str = "") -> List[SearchBook]:
+    """
+    Mirrors SearchModel.mergeItems() — deduplicates by (name, author) across sources,
+    accumulates origins per book, then ranks by: exact title match > contains > other,
+    then by origin count descending (= how many sources have the book).
+    """
+    # Merge by (name.lower(), author.lower()) — track all origins per book
+    merged: dict = {}  # key → SearchBook (best representative)
+    for sb in results:
+        book_key = (sb.name.strip().lower(), sb.author.strip().lower())
+        if book_key not in merged:
+            merged[book_key] = sb
+            # Ensure own origin is tracked
+            sb.add_origin(sb.origin)
+        else:
+            existing = merged[book_key]
+            existing.add_origin(sb.origin)
+            # Prefer richer representative (has intro/cover)
+            if not existing.intro and sb.intro:
+                existing.intro = sb.intro
+            if not existing.coverUrl and sb.coverUrl:
+                existing.coverUrl = sb.coverUrl
+            if not existing.latestChapterTitle and sb.latestChapterTitle:
+                existing.latestChapterTitle = sb.latestChapterTitle
+
+    deduped = list(merged.values())
+
+    # 3-tier relevance ranking (mirrors SearchModel.sortByDescending)
+    key_l = key.strip().lower()
+
+    def _rank(sb: SearchBook) -> tuple:
+        name_l = sb.name.strip().lower()
+        if name_l == key_l:
+            tier = 0  # exact match
+        elif key_l in name_l:
+            tier = 1  # contains
+        else:
+            tier = 2  # other
+        return (tier, -sb.origin_count)
+
+    deduped.sort(key=_rank)
     return deduped
 
 

@@ -2035,13 +2035,16 @@ class SearchScreen(Screen):
         tbl: DataTable = self.query_one("#results-table", DataTable)
         tbl.clear()
         for i, r in enumerate(results, 1):
-            origin_count = getattr(r, "_origin_count", 1)
-            source_info = f"×{origin_count}" if origin_count > 1 else (r.originName or r.origin or "")
+            origin_count = getattr(r, "origin_count", 1)
+            if origin_count > 1:
+                source_info = f"[{origin_count}书源] {r.originName or r.origin or ''}"
+            else:
+                source_info = r.originName or r.origin or ""
             tbl.add_row(
                 str(i),
                 r.name or "",
                 r.author or "",
-                source_info[:25],
+                source_info[:30],
                 (r.latestChapterTitle or "")[:40],
                 r.bookUrl or "",
                 key=str(i - 1),

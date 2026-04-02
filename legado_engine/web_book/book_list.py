@@ -143,12 +143,13 @@ def _get_info_item(
 ) -> Optional[SearchBook]:
     engine = resolve_engine(engine)
     from .book_info import analyze_book_info
+    from ..models.book import BookType
     book = Book()
     book.load_variable_map(variable_map)
     book.bookUrl = base_url
     book.origin = book_source.bookSourceUrl
     book.originName = book_source.bookSourceName
-    book.type = book_source.bookSourceType
+    book.type = book.get_book_type(book_source.bookSourceType or 0)
     analyze_rule.set_rule_data(book)
     analyze_book_info(book, body, analyze_rule, book_source, base_url, base_url, False, engine=engine)
     if filter_fn and not filter_fn(book.name, book.author):
@@ -168,11 +169,12 @@ def _get_search_item(
     **rules,
 ) -> Optional[SearchBook]:
     engine = resolve_engine(engine)
+    from ..models.book import BookType
     book = Book()
     book.load_variable_map(variable_map)
     book.origin = book_source.bookSourceUrl
     book.originName = book_source.bookSourceName
-    book.type = book_source.bookSourceType
+    book.type = book.get_book_type(book_source.bookSourceType or 0)
 
     # Each call gets its own AnalyzeRule so this is thread-safe
     analyze_rule = AnalyzeRule(book, book_source)
