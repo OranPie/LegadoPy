@@ -259,7 +259,7 @@ class SourcePickerScreen(ModalScreen):
 
     def on_mount(self) -> None:
         table: DataTable = self.query_one("#source-picker-table", DataTable)
-        table.add_columns("#", "名称", "分组", "搜索", "发现", "URL")
+        table.add_columns("#", "名称", "分组", "搜索", "发现", "备注", "URL")
         self._apply_filter("")
 
     def action_focus_filter(self) -> None:
@@ -278,12 +278,15 @@ class SourcePickerScreen(ModalScreen):
         table.clear()
         for idx, source in enumerate(self._filtered_sources, 1):
             enabled_mark = "●" if getattr(source, "enabled", True) else "○"
+            comment = getattr(source, "bookSourceComment", None) or ""
+            comment_preview = comment[:20] + "…" if len(comment) > 20 else comment
             table.add_row(
                 str(idx),
                 f"{enabled_mark} {source.bookSourceName or ''}",
                 source.bookSourceGroup or "—",
                 "✓" if source.searchUrl else "✗",
                 "✓" if source.exploreUrl else "✗",
+                comment_preview,
                 source.bookSourceUrl or "",
                 key=str(idx - 1),
             )
@@ -1760,6 +1763,7 @@ class SearchScreen(Screen):
         Binding("R",      "force_refresh",   "强制刷新", show=False),
         Binding("p",      "toggle_precision", "精确搜索"),
         Binding("h",      "show_history",   "搜索历史"),
+        Binding("m",      "search_all_sources", "全源搜索"),
         Binding("b",      "open_bookshelf", "书架"),
         Binding("t",      "open_reader_settings", "设置"),
         Binding("a",      "open_source_ui", "认证"),
@@ -1777,6 +1781,7 @@ class SearchScreen(Screen):
                 yield Button("📚", id="btn-bookshelf", classes="icon-btn")
                 yield Input(placeholder="🔍 输入书名、作者或关键词…", id="search-input")
                 yield Button("搜索", variant="primary", id="btn-search")
+                yield Button("🌐 全源", id="btn-search-all", classes="icon-btn")
                 yield Button("🔐", id="btn-source-ui", classes="icon-btn")
                 yield Button("🧭", id="btn-discover", classes="icon-btn")
                 yield Button("⚙", id="btn-reader-settings", classes="icon-btn")
@@ -1852,6 +1857,23 @@ class SearchScreen(Screen):
         """R — bypass cache and re-fetch search results."""
         self._do_search(force_refresh=True)
 
+    def action_search_all_sources(self) -> None:
+        """M — search across all loaded sources simultaneously."""
+        sources = [s for s in (self.app.all_sources or []) if s.searchUrl]
+        if not sources:
+            if self.source:
+                # Fall back to active source only
+                self._do_search()
+            else:
+                self.app.warn("请先加载书源。")
+            return
+        query = self.query_one("#search-input", Input).value.strip()
+        if not query:
+            self.app.warn("请输入搜索关键词。")
+            return
+        self.app.notify(f"🌐 全源搜索：{len(sources)} 个书源，关键词「{query}」", title="全源搜索")
+        self._run_multi_source_search(query, sources)
+
     def action_open_bookshelf(self) -> None:
         self.app.open_bookshelf()
 
@@ -1867,6 +1889,10 @@ class SearchScreen(Screen):
     @on(Button.Pressed, "#btn-load-source")
     def load_source(self) -> None:
         self.app.open_source_loader()
+
+    @on(Button.Pressed, "#btn-search-all")
+    def search_all_pressed(self) -> None:
+        self.action_search_all_sources()
 
     @on(Button.Pressed, "#btn-search")
     def search_pressed(self) -> None:
@@ -1919,6 +1945,35 @@ class SearchScreen(Screen):
                 lambda: setattr(self.query_one("#search-loading"), "display", False)
             )
         self.app.call_from_thread(self._populate_results, results)
+
+    @work(thread=True)
+    def _run_multi_source_search(self, query: str, sources: "List[BookSource]") -> None:
+        """Search all provided sources in parallel; merge and display results."""
+        self.app.call_from_thread(
+            lambda: setattr(self.query_one("#search-loading"), "display", True)
+        )
+        all_results: list = []
+        try:
+            from legado_engine import search_books_parallel
+            all_results = search_books_parallel(sources, query)
+            all_results = _rank_search_results(all_results, query, precision_search=self._precision_search)
+            self.app.state.add_search_history(query)
+        except ImportError:
+            # Fallback: sequential search across sources
+            for src in sources:
+                try:
+                    part = search_book(src, query)
+                    all_results.extend(part)
+                except Exception:
+                    pass
+            all_results = _rank_search_results(all_results, query, precision_search=self._precision_search)
+        except Exception as e:
+            self.app.call_from_thread(self.app.error, f"全源搜索失败：{e}")
+        finally:
+            self.app.call_from_thread(
+                lambda: setattr(self.query_one("#search-loading"), "display", False)
+            )
+        self.app.call_from_thread(self._populate_results, all_results)
 
     def _populate_results(self, results: list) -> None:
         self.results = results
@@ -2478,8 +2533,11 @@ class ChapterListScreen(Screen):
                 key=str(ch.index),
             )
 
+        word_count_str = self._book.wordCount or ""
         self.query_one("#chapter-count", Label).update(
-            f"[dim]{len(chapters)} 章[/dim]"
+            f"[dim]{len(chapters)} 章"
+            + (f"  {word_count_str}" if word_count_str else "")
+            + "[/dim]"
         )
 
         # Show/hide resume button
