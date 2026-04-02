@@ -61,6 +61,7 @@ import legado_engine as le
 from legado_engine import (
     BookSource, Book, BookChapter,
     ExploreKind, search_book, get_book_info, get_chapter_list, get_content,
+    VipContentError,
     explore_book, get_explore_kinds,
     SourceUiActionResult, parse_source_ui, get_source_form_data,
     submit_source_form_detailed, execute_source_ui_action,
@@ -1125,6 +1126,8 @@ class ReaderSettingsScreen(ModalScreen):
             yield Label("📝 内容处理", classes="settings-section")
             re_seg = bool(settings.get("re_segment", False))
             use_rep = bool(settings.get("use_replace_rules", True))
+            cc_mode = int(settings.get("chinese_convert", 0))
+            _CC_LABELS = {0: "繁简转换：关", 1: "简→繁", 2: "繁→简"}
             with Horizontal():
                 yield Button(
                     "重新分段 ✓" if re_seg else "重新分段",
@@ -1135,6 +1138,11 @@ class ReaderSettingsScreen(ModalScreen):
                     "替换规则 ✓" if use_rep else "替换规则",
                     id="btn-use-replace",
                     variant="primary" if use_rep else "default",
+                )
+                yield Button(
+                    _CC_LABELS.get(cc_mode, "繁简转换：关"),
+                    id="btn-chinese-convert",
+                    variant="primary" if cc_mode else "default",
                 )
 
             # ── Stats section ──
@@ -1207,6 +1215,16 @@ class ReaderSettingsScreen(ModalScreen):
             btn = self.query_one("#btn-use-replace", Button)
             btn.label = "替换规则 ✓" if new_val else "替换规则"
             btn.variant = "primary" if new_val else "default"
+            return
+
+        if button_id == "btn-chinese-convert":
+            _CC_LABELS = {0: "繁简转换：关", 1: "简→繁", 2: "繁→简"}
+            settings = self.app.reader_state.get_settings()
+            new_mode = (int(settings.get("chinese_convert", 0)) + 1) % 3
+            self.app.reader_state.update_settings(chinese_convert=new_mode)
+            btn = self.query_one("#btn-chinese-convert", Button)
+            btn.label = _CC_LABELS.get(new_mode, "繁简转换：关")
+            btn.variant = "primary" if new_mode else "default"
             return
 
         if button_id == "btn-reader-settings-close":
@@ -2832,10 +2850,23 @@ class ReaderScreen(Screen):
                 self._source, self._book, self._chapter
             )
             if text is None:
+                _settings = self.app.reader_state.get_settings()
+                self._book.set_re_segment(_settings.get("re_segment", False))
+                self._book.set_use_replace_rule(_settings.get("use_replace_rules", True))
+                self._book.set_chinese_convert(int(_settings.get("chinese_convert", 0)))
                 text = get_content(self._source, self._book, self._chapter, next_ch)
                 self.app.reader_state.set_cached_content(
                     self._source, self._book, self._chapter, text
                 )
+        except VipContentError as e:
+            pay_url = e.pay_url
+            if pay_url:
+                text = (
+                    f"🔒 付费章节\n\n{e}\n\n"
+                    f"购买链接（复制到浏览器）：\n{pay_url}"
+                )
+            else:
+                text = f"🔒 付费章节\n\n{e}"
         except Exception as e:
             text = f"*加载失败：{e}*"
         preload_count = int(self.app.reader_state.get_settings().get("preload_count", 2))

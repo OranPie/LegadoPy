@@ -21,6 +21,7 @@ DEFAULT_READER_SETTINGS: Dict[str, Any] = {
     "re_segment": False,         # re-segment poorly-formatted chapters
     "use_replace_rules": True,   # apply user replace rules to content
     "paragraph_indent": True,    # prepend　　to each paragraph
+    "chinese_convert": 0,        # 0=none, 1=simplified→traditional, 2=traditional→simplified
 }
 
 

@@ -14,7 +14,7 @@ from ..analyze.analyze_url import AnalyzeUrl
 from ..pipeline import run_login_check
 from ..utils.html_formatter import format_html, format_keep_img
 from ..utils.network_utils import get_absolute_url
-from ..utils.content_help import re_segment
+from ..utils.content_help import re_segment, chinese_convert
 
 if TYPE_CHECKING:
     from ..models.book_source import BookSource, ContentRule
@@ -187,7 +187,14 @@ def _post_process_content(content: str, book: "Book", chapter: "BookChapter") ->
         paragraph = line.strip('\u0020\u3000\t\r\n')
         if paragraph:
             indented.append(f"{PARAGRAPH_INDENT}{paragraph}")
-    return "\n".join(indented)
+    content = "\n".join(indented)
+
+    # --- 4. Chinese script conversion ---
+    convert_mode = book.get_chinese_convert() if hasattr(book, "get_chinese_convert") else 0
+    if convert_mode:
+        content = chinese_convert(content, convert_mode)
+
+    return content
 
 
 def _analyze_content_page(

@@ -93,6 +93,7 @@ class Book(RuleData):
     _reverse_toc: bool = False
     _use_replace_rule: bool = True
     _re_segment: bool = False
+    _chinese_convert: int = 0
 
     def get_reverse_toc(self) -> bool:
         return self._reverse_toc
@@ -110,6 +111,15 @@ class Book(RuleData):
 
     def set_re_segment(self, value: bool) -> None:
         self._re_segment = bool(value)
+
+    def get_chinese_convert(self) -> int:
+        """Return Chinese conversion mode: 0=none, 1=s→t, 2=t→s."""
+        if self.readConfig and "chineseConverterType" in self.readConfig:
+            return int(self.readConfig["chineseConverterType"])
+        return self._chinese_convert
+
+    def set_chinese_convert(self, mode: int) -> None:
+        self._chinese_convert = int(mode)
 
     def to_search_book(self) -> "SearchBook":
         result = SearchBook(

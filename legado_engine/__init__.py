@@ -43,6 +43,7 @@ from .web_book import (
     get_book_info,
     get_chapter_list,
     get_content,
+    VipContentError,
 )
 
 # ── Auth & Login ──────────────────────────────────────────────────────────────
@@ -101,7 +102,7 @@ __all__ = [
     "Mode", "SourceRule", "AnalyzeRule", "AnalyzeUrl", "StrResponse", "JsCookie",
     # Web API
     "search_book", "search_books_parallel", "precise_search", "explore_book",
-    "get_book_info", "get_chapter_list", "get_content",
+    "get_book_info", "get_chapter_list", "get_content", "VipContentError",
     # Auth & Login
     "UiRow", "LoginRow", "SourceUiActionResult",
     "parse_ui_rows", "parse_source_ui", "parse_login_ui",

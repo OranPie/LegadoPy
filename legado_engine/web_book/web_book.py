@@ -25,9 +25,22 @@ from .book_chapter_list import analyze_chapter_list
 from .book_content import analyze_content
 from ..analyze.analyze_rule import AnalyzeRule
 from ..utils.network_utils import get_absolute_url
+from ..js import JsExtensions, eval_js
 
 if TYPE_CHECKING:
     pass
+
+
+class VipContentError(Exception):
+    """Raised when a chapter requires payment.
+
+    Attributes:
+        pay_url: Optional URL the user should visit to purchase the chapter.
+    """
+
+    def __init__(self, message: str, pay_url: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.pay_url = pay_url
 
 
 def _is_inline_book_marker(book: Book, body: str) -> bool:
@@ -404,6 +417,24 @@ def get_content(
         raise ValueError(f"Chapter URL looks invalid: {chapter.url!r}")
     try:
         content_rule = book_source.get_content_rule()
+
+        # ── payAction handling (mirrors ReadBookActivity.payAction()) ──────────
+        if chapter.isVip and not chapter.isPay:
+            pay_action = getattr(content_rule, "payAction", None) or ""
+            if pay_action.strip():
+                analyze_rule = AnalyzeRule(book, book_source, engine=engine)
+                analyze_rule.set_chapter(chapter)
+                try:
+                    result = str(analyze_rule.eval_js(pay_action) or "")
+                except Exception:
+                    result = ""
+                # If result looks like a URL, surface it for the UI; otherwise just notify
+                pay_url = result if result.startswith(("http://", "https://")) else None
+                raise VipContentError(
+                    f"付费章节 – {result or '需要购买'}", pay_url=pay_url
+                )
+            raise VipContentError("付费章节，无法加载内容")
+
         analyze_url = AnalyzeUrl(
             m_url=chapter.url,
             source=book_source,

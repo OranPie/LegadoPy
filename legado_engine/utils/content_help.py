@@ -8,10 +8,14 @@ cases for web-scraped Chinese novels:
 * Merges lines that were split mid-sentence (no trailing sentence-end mark).
 * Splits walls-of-text at sentence-boundary punctuation.
 * Normalises quotation marks.
+
+Also provides Chinese script conversion (simplified ↔ traditional) via OpenCC
+when the ``opencc`` package is available.
 """
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 # Sentence-ending punctuation (Chinese + ASCII)
 _SENT_END = frozenset('。！？!?～~')
@@ -27,6 +31,53 @@ _RE_SPACE_IDEOG = re.compile(r'[\u3000\s]+')
 
 # Sentence boundary for re-split
 _RE_SPLIT_SENT  = re.compile(r'(?<=[。！？!?])')
+
+# ── Chinese script conversion ────────────────────────────────────────────────
+# Conversion modes (mirrors Legado's chineseConverterType PreferKey):
+#   0 = no conversion, 1 = simplified → traditional, 2 = traditional → simplified
+CHINESE_CONVERT_NONE = 0
+CHINESE_CONVERT_S2T  = 1   # simplified → traditional
+CHINESE_CONVERT_T2S  = 2   # traditional → simplified
+
+_opencc_cache: dict[str, object] = {}
+
+
+def _get_opencc(config: str) -> Optional[object]:
+    """Return a cached OpenCC converter, or None if opencc is unavailable."""
+    if config in _opencc_cache:
+        return _opencc_cache[config]
+    try:
+        import opencc  # type: ignore[import]
+        converter = opencc.OpenCC(config)
+        _opencc_cache[config] = converter
+        return converter
+    except Exception:
+        _opencc_cache[config] = None
+        return None
+
+
+def chinese_convert(text: str, mode: int) -> str:
+    """
+    Convert Chinese script between simplified and traditional.
+
+    Args:
+        text: Input text.
+        mode: One of CHINESE_CONVERT_NONE (0), CHINESE_CONVERT_S2T (1),
+              CHINESE_CONVERT_T2S (2).
+
+    Returns:
+        Converted text, or original text if conversion is unavailable.
+    """
+    if mode == CHINESE_CONVERT_NONE or not text:
+        return text
+    config = "s2t.json" if mode == CHINESE_CONVERT_S2T else "t2s.json"
+    converter = _get_opencc(config)
+    if converter is None:
+        return text
+    try:
+        return converter.convert(text)  # type: ignore[union-attr]
+    except Exception:
+        return text
 
 
 def re_segment(content: str, chapter_name: str = "") -> str:
