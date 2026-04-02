@@ -24,6 +24,7 @@ DEFAULT_READER_SETTINGS: Dict[str, Any] = {
     "chinese_convert": 0,        # 0=none, 1=simplified→traditional, 2=traditional→simplified
     "reader_width": 0,           # 0 = use preset; >0 = custom column width override
     "line_spacing": 0,           # 0 = use preset; 1/2/3 = compact/normal/wide
+    "font_size": 0,              # 0 = default terminal font; 1-5 = relative scale label
 }
 
 
@@ -68,6 +69,9 @@ class ReaderState:
         data.setdefault("all_sources", [])
         if not isinstance(data["all_sources"], list):
             data["all_sources"] = []
+        data.setdefault("source_health", {})
+        if not isinstance(data["source_health"], dict):
+            data["source_health"] = {}
         return data
 
     def _save(self) -> None:
@@ -234,6 +238,21 @@ class ReaderState:
         with self._lock:
             self._state["all_sources"] = [s.to_dict() for s in sources]
             self._save()
+
+    def record_source_health(self, source_url: str, passed: bool, message: str = "") -> None:
+        """Record a test result for a source (mirrors Kotlin respondTime tracking)."""
+        import time
+        with self._lock:
+            self._state["source_health"][source_url] = {
+                "passed": passed,
+                "message": message[:200],
+                "tested_at": int(time.time()),
+            }
+            self._save()
+
+    def get_source_health(self, source_url: str) -> Optional[Dict[str, Any]]:
+        """Return last test result for a source URL, or None if never tested."""
+        return self._state.get("source_health", {}).get(source_url)
 
     def list_bookshelf(self) -> List[Dict[str, Any]]:
         with self._lock:

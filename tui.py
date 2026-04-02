@@ -267,7 +267,7 @@ class SourcePickerScreen(ModalScreen):
 
     def on_mount(self) -> None:
         table: DataTable = self.query_one("#source-picker-table", DataTable)
-        table.add_columns("#", "名称", "分组", "类型", "搜索", "发现", "备注", "URL")
+        table.add_columns("#", "名称", "分组", "类型", "搜索", "发现", "状态", "备注", "URL")
         self._apply_filter("")
 
     def action_focus_filter(self) -> None:
@@ -284,10 +284,18 @@ class SourcePickerScreen(ModalScreen):
             ]
         table: DataTable = self.query_one("#source-picker-table", DataTable)
         table.clear()
+        from reader_state import reader_state as _rs
         for idx, source in enumerate(self._filtered_sources, 1):
             enabled_mark = "●" if getattr(source, "enabled", True) else "○"
             comment = getattr(source, "bookSourceComment", None) or ""
             comment_preview = comment[:20] + "…" if len(comment) > 20 else comment
+            health = _rs.get_source_health(source.bookSourceUrl or "")
+            if health is None:
+                health_badge = "?"
+            elif health["passed"]:
+                health_badge = "✓"
+            else:
+                health_badge = "✗"
             table.add_row(
                 str(idx),
                 f"{enabled_mark} {source.bookSourceName or ''}",
@@ -295,6 +303,7 @@ class SourcePickerScreen(ModalScreen):
                 BOOK_SOURCE_TYPE_LABELS.get(source.bookSourceType or 0, "📖"),
                 "✓" if source.searchUrl else "✗",
                 "✓" if source.exploreUrl else "✗",
+                health_badge,
                 comment_preview,
                 source.bookSourceUrl or "",
                 key=str(idx - 1),
@@ -1171,6 +1180,18 @@ class ReaderSettingsScreen(ModalScreen):
                     variant="primary" if cc_mode else "default",
                 )
 
+            # ── Font size section ──
+            yield Label("🔤 字号调节（0=默认，1–5）", classes="settings-section")
+            font_size = int(settings.get("font_size", 0) or 0)
+            _FONT_SIZE_LABELS = {0: "默认", 1: "最小", 2: "小", 3: "中", 4: "大", 5: "最大"}
+            with Horizontal(id="reader-font-size-buttons"):
+                for fs in range(6):
+                    yield Button(
+                        _FONT_SIZE_LABELS[fs],
+                        id=f"reader-font-size-{fs}",
+                        variant="primary" if fs == font_size else "default",
+                    )
+
             # ── Stats section ──
             yield Label("📊 阅读统计", classes="settings-section")
             yield Static("", id="reader-stats-info")
@@ -1251,6 +1272,19 @@ class ReaderSettingsScreen(ModalScreen):
             btn = self.query_one("#btn-chinese-convert", Button)
             btn.label = _CC_LABELS.get(new_mode, "繁简转换：关")
             btn.variant = "primary" if new_mode else "default"
+            return
+
+        if button_id.startswith("reader-font-size-"):
+            try:
+                fs = int(button_id.split("-")[-1])
+            except ValueError:
+                return
+            _FONT_SIZE_LABELS = {0: "默认", 1: "最小", 2: "小", 3: "中", 4: "大", 5: "最大"}
+            self.app.reader_state.update_settings(font_size=fs)
+            for i in range(6):
+                btn = self.query_one(f"#reader-font-size-{i}", Button)
+                btn.variant = "primary" if i == fs else "default"
+            self.app.refresh_reader_views()
             return
 
         if button_id == "btn-reader-settings-close":
@@ -1370,6 +1404,7 @@ class SourceTestScreen(Screen):
     def _do_test(self, keyword: str) -> None:
         import time
         lines: list[str] = []
+        errors: list[str] = []
 
         def _update(msg: str) -> None:
             lines.append(msg)
@@ -1391,6 +1426,7 @@ class SourceTestScreen(Screen):
                     _update(f"⚠️ 搜索 ({elapsed:.1f}s): 0 条结果")
             except Exception as e:
                 _update(f"❌ 搜索失败 ({time.time()-t0:.1f}s): {e}")
+                errors.append(f"搜索: {e}")
                 results = []
 
             # 2. Book info test (if search succeeded)
@@ -1403,6 +1439,7 @@ class SourceTestScreen(Screen):
                     _update(f"✅ 书籍信息 ({elapsed:.1f}s): {book_info.name} - 简介长度 {len(book_info.intro or '')}")
                 except Exception as e:
                     _update(f"❌ 书籍信息失败 ({time.time()-t0:.1f}s): {e}")
+                    errors.append(f"书籍信息: {e}")
                     book_info = book
 
                 # 3. Chapter list test
@@ -1413,6 +1450,7 @@ class SourceTestScreen(Screen):
                     _update(f"✅ 目录 ({elapsed:.1f}s): {len(chapters)} 章，第一章：{chapters[0].title if chapters else '无'}")
                 except Exception as e:
                     _update(f"❌ 目录失败 ({time.time()-t0:.1f}s): {e}")
+                    errors.append(f"目录: {e}")
                     chapters = []
 
                 # 4. Content test
@@ -1425,6 +1463,7 @@ class SourceTestScreen(Screen):
                         _update(f"✅ 正文 ({elapsed:.1f}s): {len(content or '')} 字，预览：{preview}…")
                     except Exception as e:
                         _update(f"❌ 正文失败 ({time.time()-t0:.1f}s): {e}")
+                        errors.append(f"正文: {e}")
         else:
             _update("⚠️ 该书源无搜索链接，跳过搜索测试")
 
@@ -1442,8 +1481,14 @@ class SourceTestScreen(Screen):
                     _update("⚠️ 发现分类为空")
             except Exception as e:
                 _update(f"❌ 发现失败 ({time.time()-t0:.1f}s): {e}")
+                errors.append(f"发现: {e}")
 
         _update("\n── 测试完成 ──")
+        # Save health result to state
+        from reader_state import reader_state
+        passed = len(errors) == 0
+        msg = "; ".join(errors) if errors else "OK"
+        reader_state.record_source_health(self._source.bookSourceUrl, passed, msg)
         self.app.call_from_thread(self._on_test_done)
 
     def _on_test_done(self) -> None:
@@ -3144,6 +3189,9 @@ class ReaderScreen(Screen):
         Binding("d",         "cycle_theme",         "主题"),
         Binding("m",         "add_bookmark",        "书签"),
         Binding("shift+m",   "show_bookmarks",      "书签列表"),
+        Binding("+",         "increase_font",       "字号+", show=False),
+        Binding("-",         "decrease_font",       "字号-", show=False),
+        Binding("=",         "reset_font",          "字号重置", show=False),
     ]
 
     def __init__(
@@ -3322,6 +3370,32 @@ class ReaderScreen(Screen):
         theme_info = READER_THEMES[next_theme]
         self.app.info(f"{theme_info['icon']} 主题：{theme_info['label']}")
 
+    def action_increase_font(self) -> None:
+        """+ key — increase font size (capped at 5)."""
+        settings = self.app.reader_state.get_settings()
+        current = int(settings.get("font_size", 0) or 0)
+        new_fs = min(5, current + 1)
+        self.app.reader_state.update_settings(font_size=new_fs)
+        self._render_current_text()
+        _FONT_SIZE_LABELS = {0: "默认", 1: "最小", 2: "小", 3: "中", 4: "大", 5: "最大"}
+        self.app.info(f"🔤 字号：{_FONT_SIZE_LABELS[new_fs]}")
+
+    def action_decrease_font(self) -> None:
+        """- key — decrease font size (floored at 0=default)."""
+        settings = self.app.reader_state.get_settings()
+        current = int(settings.get("font_size", 0) or 0)
+        new_fs = max(0, current - 1)
+        self.app.reader_state.update_settings(font_size=new_fs)
+        self._render_current_text()
+        _FONT_SIZE_LABELS = {0: "默认", 1: "最小", 2: "小", 3: "中", 4: "大", 5: "最大"}
+        self.app.info(f"🔤 字号：{_FONT_SIZE_LABELS[new_fs]}")
+
+    def action_reset_font(self) -> None:
+        """= key — reset font size to default."""
+        self.app.reader_state.update_settings(font_size=0)
+        self._render_current_text()
+        self.app.info("🔤 字号已重置为默认")
+
     def action_add_bookmark(self) -> None:
         """Add a bookmark at the current chapter."""
         snippet = (self._current_text or "")[:120].replace("\n", " ")
@@ -3390,6 +3464,14 @@ class ReaderScreen(Screen):
         width = custom_width if custom_width > 0 else preset["width"]
         gap = custom_gap if custom_gap > 0 else preset["gap"]
         padding = " " * preset["padding"]
+
+        # Font size: levels 1–5 reduce effective width to simulate larger text
+        # (narrower column = more wrapping = visually "bigger" text)
+        font_size = int(settings.get("font_size", 0) or 0)
+        _FS_WIDTH_FACTOR = {0: 1.0, 1: 1.2, 2: 1.0, 3: 0.85, 4: 0.70, 5: 0.55}
+        _FS_GAP_BONUS = {0: 0, 1: 0, 2: 0, 3: 1, 4: 2, 5: 2}
+        width = max(30, int(width * _FS_WIDTH_FACTOR.get(font_size, 1.0)))
+        gap = gap + _FS_GAP_BONUS.get(font_size, 0)
 
         # Build renderable
         renderable = Text()
