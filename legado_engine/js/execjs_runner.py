@@ -841,6 +841,18 @@ function run(ctx) {
                 return urlList.map(function(url) { return java.ajax(url); });
             } catch(e) { return []; }
         },
+        // getZipStringContent: fetch a zip from URL and extract a named file from it
+        getZipStringContent: function(url, path, charsetName) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'getZipStringContent',
+                    url: String(url || ""),
+                    path: String(path || ""),
+                    charsetName: charsetName ? String(charsetName) : null
+                });
+                return (r != null) ? String(r) : "";
+            } catch(e) { return ""; }
+        },
         qread: function() { return false; }
     };
     

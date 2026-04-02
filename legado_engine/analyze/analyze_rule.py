@@ -52,6 +52,7 @@ class _AnalyzeRuleP2:
         self._is_regex: bool = False
         self._chapter: "BookChapter | None" = None
         self._next_chapter_url: str | None = None
+        self._rss_article: Any = None  # RssArticle binding for RSS sources
 
         # lazy sub-parsers
         self._by_xpath: AnalyzeByXPath | None = None
@@ -111,6 +112,11 @@ class _AnalyzeRuleP2:
 
     def set_next_chapter_url(self, url: str | None) -> "AnalyzeRule":
         self._next_chapter_url = url
+        return self
+
+    def set_rss_article(self, article: Any) -> "AnalyzeRule":
+        """Bind an RssArticle to this rule context (mirrors AnalyzeRule.kt rssArticle binding)."""
+        self._rss_article = article
         return self
 
     def set_rule_data(self, rule_data: "RuleData | None") -> "AnalyzeRule":
@@ -271,6 +277,7 @@ class AnalyzeRule(_AnalyzeRuleP2):
             "src":            self._content,
             "nextChapterUrl": self._next_chapter_url,
             "engine":         self._engine,
+            "rssArticle":     self._rss_article,
         }
         return eval_js(js_str, result=result, bindings=bindings, java_obj=self._java)
 

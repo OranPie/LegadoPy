@@ -19,6 +19,7 @@ from ..utils.content_help import re_segment, chinese_convert
 if TYPE_CHECKING:
     from ..models.book_source import BookSource, ContentRule
     from ..models.book import Book, BookChapter
+    from ..analyze.analyze_rule import AnalyzeRule as _AnalyzeRuleT
 
 # Default paragraph indent (matches ReadBookConfig.paragraphIndent in Android)
 PARAGRAPH_INDENT = "　　"
@@ -228,7 +229,33 @@ def _analyze_content_page(
     else:
         content = format_html(raw_content)
 
+    # imageDecode: JS expression run per-image to decode encrypted image URLs
+    # Mirrors ContentRule.imageDecode usage in ReadBook.kt
+    if content_rule.imageDecode and content:
+        content = _apply_image_decode(content, content_rule.imageDecode, analyze_rule)
+
     next_urls: List[str] = []
     if get_next_page_url and content_rule.nextContentUrl:
         next_urls = analyze_rule.get_string_list(content_rule.nextContentUrl, is_url=True) or []
     return content, next_urls
+
+
+_IMG_SRC_RE = re.compile(r'(<img[^>]+src=")([^"]+)(")', re.IGNORECASE)
+
+
+def _apply_image_decode(content: str, image_decode_js: str, analyze_rule: AnalyzeRule) -> str:
+    """
+    For each <img src="..."> in content, evaluate imageDecode JS with `result`=src
+    and replace src with the returned value.  Mirrors ReadBook.kt imageDecode logic.
+    """
+    def _decode_src(m: re.Match) -> str:
+        prefix, src, suffix = m.group(1), m.group(2), m.group(3)
+        try:
+            decoded = analyze_rule.eval_js(image_decode_js, result=src)
+            if decoded and isinstance(decoded, str) and decoded.strip():
+                return f"{prefix}{decoded.strip()}{suffix}"
+        except Exception:
+            pass
+        return m.group(0)
+
+    return _IMG_SRC_RE.sub(_decode_src, content)

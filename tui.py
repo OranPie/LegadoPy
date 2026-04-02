@@ -1878,11 +1878,14 @@ class SearchScreen(Screen):
         Binding("t",      "open_reader_settings", "设置"),
         Binding("a",      "open_source_ui", "认证"),
         Binding("e",      "open_discover", "发现"),
+        Binding("n",      "next_page",      "下一页"),
     ]
 
     source: reactive[Optional[BookSource]] = reactive(None)
     results: reactive[list] = reactive([])
     _precision_search: bool = False
+    _search_page: int = 1
+    _last_query: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1917,10 +1920,11 @@ class SearchScreen(Screen):
     def _update_source_label(self) -> None:
         src = self.source
         precision_badge = " [bold yellow]精确[/bold yellow]" if self._precision_search else ""
+        page_badge = f" [dim]第 {self._search_page} 页[/dim]" if self._search_page > 1 else ""
         if src:
             self.query_one("#source-label", Label).update(
                 f"[dim]书源：[/dim][bold cyan]{src.bookSourceName}[/bold cyan]  "
-                f"[dim]{src.bookSourceUrl}[/dim]{precision_badge}"
+                f"[dim]{src.bookSourceUrl}[/dim]{precision_badge}{page_badge}"
             )
         else:
             self.query_one("#source-label", Label).update(
@@ -1966,6 +1970,15 @@ class SearchScreen(Screen):
     def action_force_refresh(self) -> None:
         """R — bypass cache and re-fetch search results."""
         self._do_search(force_refresh=True)
+
+    def action_next_page(self) -> None:
+        """N — load next page of results for the current query."""
+        if not self._last_query or not self.source:
+            self.app.notify("请先搜索", severity="warning")
+            return
+        self._search_page += 1
+        self.app.notify(f"加载第 {self._search_page} 页…", title="翻页")
+        self._run_search(self._last_query, page=self._search_page, append=True)
 
     def action_search_all_sources(self) -> None:
         """M — search across all loaded sources simultaneously."""
@@ -2035,18 +2048,21 @@ class SearchScreen(Screen):
         query = self.query_one("#search-input", Input).value.strip()
         if not query:
             return
-        self._run_search(query, force_refresh)
+        self._search_page = 1
+        self._last_query = query
+        self._run_search(query, force_refresh=force_refresh, page=1, append=False)
 
     @work(thread=True)
-    def _run_search(self, query: str, force_refresh: bool = False) -> None:
+    def _run_search(self, query: str, force_refresh: bool = False, page: int = 1, append: bool = False) -> None:
         self.app.call_from_thread(
             lambda: setattr(self.query_one("#search-loading"), "display", True)
         )
         try:
-            results = search_book(self.source, query)
+            results = search_book(self.source, query, page=page)
             results = _rank_search_results(results, query, precision_search=self._precision_search)
-            # Record search history
-            self.app.state.add_search_history(query)
+            # Record search history only on first page
+            if page == 1:
+                self.app.state.add_search_history(query)
         except Exception as e:
             self.app.call_from_thread(self.app.error, f"搜索失败：{e}")
             results = []
@@ -2054,7 +2070,7 @@ class SearchScreen(Screen):
             self.app.call_from_thread(
                 lambda: setattr(self.query_one("#search-loading"), "display", False)
             )
-        self.app.call_from_thread(self._populate_results, results)
+        self.app.call_from_thread(self._populate_results, results, append)
 
     @work(thread=True)
     def _run_multi_source_search(self, query: str, sources: "List[BookSource]") -> None:
@@ -2085,11 +2101,18 @@ class SearchScreen(Screen):
             )
         self.app.call_from_thread(self._populate_results, all_results)
 
-    def _populate_results(self, results: list) -> None:
+    def _populate_results(self, results: list, append: bool = False) -> None:
+        if append:
+            existing = list(self.results)
+            results = existing + results
         self.results = results
         tbl: DataTable = self.query_one("#results-table", DataTable)
-        tbl.clear()
-        for i, r in enumerate(results, 1):
+        if append:
+            start_i = len(tbl.rows) + 1
+        else:
+            tbl.clear()
+            start_i = 1
+        for i, r in enumerate(results if not append else results[start_i - 1:], start_i):
             origin_count = getattr(r, "origin_count", 1)
             if origin_count > 1:
                 source_info = f"[{origin_count}书源] {r.originName or r.origin or ''}"
@@ -2104,6 +2127,8 @@ class SearchScreen(Screen):
                 r.bookUrl or "",
                 key=str(i - 1),
             )
+        if self._search_page > 1:
+            self._update_source_label()
 
     @on(DataTable.RowSelected, "#results-table")
     def row_selected(self, event: DataTable.RowSelected) -> None:

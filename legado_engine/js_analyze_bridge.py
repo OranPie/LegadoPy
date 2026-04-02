@@ -111,6 +111,32 @@ def main() -> int:
     elif operation == "toNumChapter":
         from .utils.content_help import to_num_chapter
         result = to_num_chapter(payload.get("text") or "")
+    elif operation == "getZipStringContent":
+        import io
+        import zipfile
+        import urllib.request
+        url = payload.get("url") or ""
+        inner_path = payload.get("path") or ""
+        charset = payload.get("charsetName") or None
+        try:
+            if url.startswith("http://") or url.startswith("https://"):
+                with urllib.request.urlopen(url, timeout=15) as resp:
+                    zip_bytes = resp.read()
+            else:
+                # treat as hex string
+                zip_bytes = bytes.fromhex(url)
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                entry_bytes = zf.read(inner_path)
+            if charset:
+                result = entry_bytes.decode(charset, errors="replace")
+            else:
+                # auto-detect encoding (try utf-8 then gbk)
+                try:
+                    result = entry_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    result = entry_bytes.decode("gbk", errors="replace")
+        except Exception as e:
+            result = ""
     else:
         raise ValueError(f"Unsupported operation: {operation}")
 
