@@ -2645,6 +2645,90 @@ class BookScreen(Screen):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# BOOKMARK LIST SCREEN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BookmarkListScreen(ModalScreen):
+    """Show bookmarks for the current book; selecting one navigates there."""
+
+    BINDINGS = [Binding("escape", "dismiss", "关闭")]
+
+    def __init__(
+        self,
+        bookmarks: list,
+        book: "Book",
+        chapters: list,
+        source: "BookSource",
+    ) -> None:
+        super().__init__()
+        self._bookmarks = bookmarks
+        self._book = book
+        self._chapters = chapters
+        self._source = source
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="bookmark-container"):
+            yield Label(f"🔖 书签 — {self._book.name or ''}", id="bookmark-title")
+            table = DataTable(id="bookmark-table")
+            table.add_columns("章节", "内容摘要", "时间")
+            import datetime
+            for bm in self._bookmarks:
+                ts = int(bm.get("time", 0)) // 1000
+                dt_str = datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else ""
+                table.add_row(
+                    bm.get("chapterName", ""),
+                    (bm.get("content", "") or "")[:60],
+                    dt_str,
+                    key=str(bm.get("time", 0)),
+                )
+            yield table
+            with Horizontal():
+                yield Button("跳转", variant="primary", id="btn-bm-goto")
+                yield Button("删除", variant="warning", id="btn-bm-delete")
+                yield Button("关闭", id="btn-bm-close")
+
+    @on(Button.Pressed, "#btn-bm-goto")
+    def _goto_bookmark(self) -> None:
+        table = self.query_one("#bookmark-table", DataTable)
+        if table.cursor_row < 0 or table.cursor_row >= len(self._bookmarks):
+            return
+        bm = self._bookmarks[table.cursor_row]
+        target_idx = int(bm.get("chapterIndex", 0))
+        chapter = next((c for c in self._chapters if c.index == target_idx), None)
+        if chapter is None:
+            self.app.error("找不到对应章节")
+            return
+        self.dismiss(None)
+        self.app.push_screen(
+            ReaderScreen(self._book, chapter, self._chapters, self._source)
+        )
+
+    @on(Button.Pressed, "#btn-bm-delete")
+    def _delete_bookmark(self) -> None:
+        table = self.query_one("#bookmark-table", DataTable)
+        if table.cursor_row < 0 or table.cursor_row >= len(self._bookmarks):
+            return
+        bm = self._bookmarks[table.cursor_row]
+        self.app.reader_state.remove_bookmark(int(bm.get("time", 0)))
+        del self._bookmarks[table.cursor_row]
+        table.clear()
+        import datetime
+        for b in self._bookmarks:
+            ts = int(b.get("time", 0)) // 1000
+            dt_str = datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else ""
+            table.add_row(
+                b.get("chapterName", ""),
+                (b.get("content", "") or "")[:60],
+                dt_str,
+                key=str(b.get("time", 0)),
+            )
+        self.app.info("书签已删除")
+
+    @on(Button.Pressed, "#btn-bm-close")
+    def _close(self) -> None:
+        self.dismiss(None)
+
+
 # READER SCREEN
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2663,6 +2747,8 @@ class ReaderScreen(Screen):
         Binding("ctrl+end",  "scroll_bottom",       "末尾"),
         Binding("ctrl+home", "scroll_top",          "顶部"),
         Binding("d",         "cycle_theme",         "主题"),
+        Binding("m",         "add_bookmark",        "书签"),
+        Binding("shift+m",   "show_bookmarks",      "书签列表"),
     ]
 
     def __init__(
@@ -2840,6 +2926,23 @@ class ReaderScreen(Screen):
         self._update_nav()
         theme_info = READER_THEMES[next_theme]
         self.app.info(f"{theme_info['icon']} 主题：{theme_info['label']}")
+
+    def action_add_bookmark(self) -> None:
+        """Add a bookmark at the current chapter."""
+        snippet = (self._current_text or "")[:120].replace("\n", " ")
+        entry = self.app.reader_state.add_bookmark(self._book, self._chapter, content=snippet)
+        self.app.info(f"🔖 书签已添加：{self._chapter.title or '第{0}章'.format(self._current_idx + 1)}")
+
+    def action_show_bookmarks(self) -> None:
+        """Show bookmarks for the current book."""
+        bm_list = self.app.reader_state.get_bookmarks(
+            book_name=self._book.name or "",
+            book_author=self._book.author or "",
+        )
+        if not bm_list:
+            self.app.info("📖 暂无书签")
+            return
+        self.app.push_screen(BookmarkListScreen(bm_list, self._book, self._chapters, self._source))
 
     @work(thread=True)
     def _load_content(self, force_refresh: bool = False) -> None:

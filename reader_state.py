@@ -60,6 +60,9 @@ class ReaderState:
         data.setdefault("search_history", [])
         if not isinstance(data["search_history"], list):
             data["search_history"] = []
+        data.setdefault("bookmarks", [])
+        if not isinstance(data["bookmarks"], list):
+            data["bookmarks"] = []
         return data
 
     def _save(self) -> None:
@@ -88,6 +91,58 @@ class ReaderState:
 
     def get_search_history(self) -> List[str]:
         return list(self._state.get("search_history", []))
+
+    # ------------------------------------------------------------------
+    # Bookmarks
+    # ------------------------------------------------------------------
+
+    def add_bookmark(
+        self,
+        book: "Book",
+        chapter: "BookChapter",
+        content: str = "",
+    ) -> Dict[str, Any]:
+        """Save a bookmark (mirrors Bookmark entity). Returns the new entry."""
+        import time as _time
+        entry: Dict[str, Any] = {
+            "time": int(_time.time() * 1000),
+            "bookName": book.name or "",
+            "bookAuthor": book.author or "",
+            "chapterIndex": chapter.index if hasattr(chapter, "index") else 0,
+            "chapterName": chapter.title or "",
+            "content": content[:500],  # store a short snippet
+        }
+        with self._lock:
+            bm_list = self._state.setdefault("bookmarks", [])
+            bm_list.insert(0, entry)
+            self._save()
+        return entry
+
+    def get_bookmarks(
+        self,
+        book_name: str = "",
+        book_author: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return bookmarks, optionally filtered by book name/author."""
+        bm_list = self._state.get("bookmarks", [])
+        if book_name or book_author:
+            bm_list = [
+                b for b in bm_list
+                if (not book_name or b.get("bookName") == book_name)
+                and (not book_author or b.get("bookAuthor") == book_author)
+            ]
+        return list(bm_list)
+
+    def remove_bookmark(self, time_ms: int) -> bool:
+        """Remove a bookmark by its timestamp key. Returns True if found."""
+        with self._lock:
+            bm_list = self._state.get("bookmarks", [])
+            new_list = [b for b in bm_list if b.get("time") != time_ms]
+            removed = len(new_list) < len(bm_list)
+            self._state["bookmarks"] = new_list
+            if removed:
+                self._save()
+        return removed
 
     @staticmethod
     def _book_key(source: BookSource, book: Book) -> str:
