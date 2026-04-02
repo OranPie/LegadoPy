@@ -69,6 +69,8 @@ class _AnalyzeRuleP2:
             get_fn=lambda k: self.get(k),
             engine=self._engine,
         )
+        # Back-reference so pyjs_runner can bridge getString/getElement etc.
+        self._java._analyze_rule = self
 
     # ------------------------------------------------------------------
     # Setters (mirror Kotlin extension functions)

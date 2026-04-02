@@ -23,17 +23,23 @@ try:
     _JS_RUNTIME = execjs.get()
     _JS_ENGINE = "execjs"
 except Exception:
-    # Fallback to js2py (ES5 only)
+    # Try PyJS (pure-Python ES2015+ interpreter)
     try:
-        import js2py  # type: ignore[import]
-        _JS_ENGINE = "js2py"
+        import pyjs  # type: ignore[import]
+        _JS_ENGINE = "pyjs"
     except ImportError:
-        pass
+        # Fallback to js2py (ES5 only)
+        try:
+            import js2py  # type: ignore[import]
+            _JS_ENGINE = "js2py"
+        except ImportError:
+            pass
 
 # Import after runtime state is initialised so execjs_runner can safely read
 # _JS_RUNTIME/_EXECJS_CONTEXT from the partially-loaded module.
 from .extensions import JsExtensions  # noqa: E402
 from .execjs_runner import _run_execjs  # noqa: E402
+from .pyjs_runner import _run_pyjs  # noqa: E402
 
 # Cache for jsLib+script concatenation, keyed by (source identity, script)
 _jslib_cache: dict[tuple[int, str], str] = {}
@@ -102,6 +108,8 @@ def eval_js(
 def _run_js(js_str: str, ctx: Dict[str, Any]) -> Any:
     if _JS_ENGINE == "js2py":
         return _run_js2py(js_str, ctx)
+    if _JS_ENGINE == "pyjs":
+        return _run_pyjs(js_str, ctx)
     if _JS_ENGINE == "execjs":
         return _run_execjs(js_str, ctx)
     # No JS engine – return result unchanged
