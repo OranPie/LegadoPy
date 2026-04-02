@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -27,6 +28,7 @@ from legado_engine.auth.login import (
     parse_source_ui,
     submit_source_form_detailed,
 )
+from legado_engine.web_book.web_book import search_books_parallel
 
 from reader_state import ReaderState
 
@@ -43,6 +45,34 @@ def load_source_text(text: str) -> BookSource:
 
 def load_source_file(path: str | Path) -> BookSource:
     return load_source_text(Path(path).read_text(encoding="utf-8"))
+
+
+def _rank_search_results(results: List[SearchBook], query: str) -> List[SearchBook]:
+    """
+    Score and rank search results by relevance to the query.
+
+    Scoring (higher = better):
+      3 — exact name match (case-insensitive)
+      2 — all query words present in name
+      1 — any query word present in name or author
+      0 — no match
+    Results with equal scores preserve their original (source) order.
+    """
+    q_lower = query.strip().lower()
+    words = [w for w in re.split(r'\s+', q_lower) if w]
+
+    def _score(sb: SearchBook) -> int:
+        name = (sb.name or "").lower()
+        author = (sb.author or "").lower()
+        if name == q_lower:
+            return 3
+        if words and all(w in name for w in words):
+            return 2
+        if any(w in name or w in author for w in words):
+            return 1
+        return 0
+
+    return sorted(results, key=_score, reverse=True)
 
 
 @dataclass
@@ -146,22 +176,89 @@ class ReaderController:
             raise ValueError("No source file path recorded")
         return self.load_source(self.session.source_path)
 
-    def search(self, query: str, page: int = 1) -> List[SearchBook]:
+    def search(self, query: str, page: int = 1, *, force_refresh: bool = False) -> List[SearchBook]:
         source = self._require_source()
         cache_key = (source.bookSourceUrl, query, page)
-        results = self._search_cache.get(cache_key)
+        results = None if force_refresh else self._search_cache.get(cache_key)
         if results is None:
             results = search_book(source, query, page=page)
+            results = _rank_search_results(results, query)
             self._search_cache[cache_key] = copy.deepcopy(results)
         else:
             results = copy.deepcopy(results)
         self.session.search_results = results
         return results
 
-    def load_explore_kinds(self) -> List[ExploreKind]:
+    def search_all_sources(
+        self,
+        sources: List[BookSource],
+        query: str,
+        page: int = 1,
+        *,
+        force_refresh: bool = False,
+        result_callback: Optional[Callable[[List[SearchBook]], None]] = None,
+    ) -> List[SearchBook]:
+        """
+        Search across multiple sources in parallel and return ranked results.
+
+        ``result_callback`` is called incrementally as each source returns,
+        allowing streaming UIs to show results before all sources finish.
+        """
+        if not sources:
+            return []
+
+        # Check the per-source caches first unless force_refresh
+        uncached_sources: List[BookSource] = []
+        cached_results: List[SearchBook] = []
+        for src in sources:
+            key = (src.bookSourceUrl, query, page)
+            if not force_refresh and key in self._search_cache:
+                cached_results.extend(copy.deepcopy(self._search_cache[key]))
+            else:
+                uncached_sources.append(src)
+
+        all_results = list(cached_results)
+
+        if uncached_sources:
+            from legado_engine.engine import resolve_engine
+            from concurrent.futures import as_completed
+
+            engine = resolve_engine(None)
+
+            def _fetch_one(src: BookSource) -> List[SearchBook]:
+                try:
+                    r = search_book(src, query, page=page)
+                    self._search_cache[(src.bookSourceUrl, query, page)] = copy.deepcopy(r)
+                    return r
+                except Exception:
+                    return []
+
+            futures = {engine.executor.submit(_fetch_one, src): src for src in uncached_sources}
+            for fut in as_completed(futures):
+                try:
+                    batch = fut.result()
+                    if batch:
+                        all_results.extend(batch)
+                        if result_callback:
+                            result_callback(_rank_search_results(list(all_results), query))
+                except Exception:
+                    pass
+
+        ranked = _rank_search_results(all_results, query)
+        # De-duplicate by bookUrl
+        seen: set = set()
+        deduped: List[SearchBook] = []
+        for sb in ranked:
+            if sb.bookUrl not in seen:
+                seen.add(sb.bookUrl)
+                deduped.append(sb)
+        self.session.search_results = deduped
+        return deduped
+
+    def load_explore_kinds(self, *, force_refresh: bool = False) -> List[ExploreKind]:
         source = self._require_source()
         source_key = source.bookSourceUrl
-        kinds = self._explore_kind_cache.get(source_key)
+        kinds = None if force_refresh else self._explore_kind_cache.get(source_key)
         if kinds is None:
             kinds = get_explore_kinds(source)
             self._explore_kind_cache[source_key] = copy.deepcopy(kinds)
@@ -172,12 +269,12 @@ class ReaderController:
         self.session.explore_results = []
         return kinds
 
-    def explore(self, kind: ExploreKind, page: int = 1) -> List[SearchBook]:
+    def explore(self, kind: ExploreKind, page: int = 1, *, force_refresh: bool = False) -> List[SearchBook]:
         source = self._require_source()
         if not kind.url:
             raise ValueError("Selected category has no URL")
         cache_key = (source.bookSourceUrl, kind.url, page)
-        results = self._explore_cache.get(cache_key)
+        results = None if force_refresh else self._explore_cache.get(cache_key)
         if results is None:
             results = explore_book(source, kind.url, page=page)
             self._explore_cache[cache_key] = copy.deepcopy(results)
@@ -187,19 +284,19 @@ class ReaderController:
         self.session.explore_results = results
         return results
 
-    def open_search_result(self, result: SearchBook) -> Book:
+    def open_search_result(self, result: SearchBook, *, force_refresh: bool = False) -> Book:
         if not self.session.source:
             raise ValueError("No source loaded")
         book = result.to_book()
-        return self.open_book(book)
+        return self.open_book(book, force_refresh=force_refresh)
 
-    def open_explore_result(self, result: SearchBook) -> Book:
-        return self.open_search_result(result)
+    def open_explore_result(self, result: SearchBook, *, force_refresh: bool = False) -> Book:
+        return self.open_search_result(result, force_refresh=force_refresh)
 
-    def open_book(self, book: Book) -> Book:
+    def open_book(self, book: Book, *, force_refresh: bool = False) -> Book:
         source = self._require_source()
         cache_key = self._book_cache_key(source, book)
-        hydrated = self._book_cache.get(cache_key)
+        hydrated = None if force_refresh else self._book_cache.get(cache_key)
         if hydrated is None:
             hydrated = get_book_info(source, book, can_rename=True)
             self._book_cache[cache_key] = copy.deepcopy(hydrated)
@@ -214,12 +311,14 @@ class ReaderController:
     def load_chapters(
         self,
         chapter_batch_fn: Callable[[List[BookChapter]], None] | None = None,
+        *,
+        force_refresh: bool = False,
     ) -> List[BookChapter]:
         source = self._require_source()
         if not self.session.book:
             raise ValueError("No active book")
         cache_key = self._chapter_cache_key(source, self.session.book)
-        chapters = self._chapter_cache.get(cache_key)
+        chapters = None if force_refresh else self._chapter_cache.get(cache_key)
         if chapters is None:
             chapters = get_chapter_list(
                 source, self.session.book, chapter_batch_fn=chapter_batch_fn
@@ -278,8 +377,18 @@ class ReaderController:
     def get_settings(self) -> Dict[str, Any]:
         return self.state.get_settings()
 
-    def get_chapter_content(self, chapter_index: int) -> str:
-        return self._load_chapter_content(chapter_index, preserve_progress=False)
+    def get_chapter_content(self, chapter_index: int, *, force_refresh: bool = False) -> str:
+        return self._load_chapter_content(chapter_index, preserve_progress=False, force_refresh=force_refresh)
+
+    def force_refresh_chapter(self, chapter_index: int) -> str:
+        """Re-fetch a chapter bypassing all caches, update the cache with fresh content."""
+        return self._load_chapter_content(chapter_index, preserve_progress=False, force_refresh=True)
+
+    def force_refresh_current_chapter(self) -> str:
+        """Re-fetch the current chapter bypassing all caches."""
+        if self.session.current_chapter_index is None:
+            raise ValueError("No chapter currently loaded")
+        return self.force_refresh_chapter(self.session.current_chapter_index)
 
     def update_current_scroll(self, scroll_ratio: float) -> Optional[Dict[str, Any]]:
         if not self.session.source or not self.session.book:
@@ -298,12 +407,14 @@ class ReaderController:
         )
         return self.get_current_progress()
 
-    def _load_chapter_content(self, chapter_index: int, *, preserve_progress: bool) -> str:
+    def _load_chapter_content(self, chapter_index: int, *, preserve_progress: bool, force_refresh: bool = False) -> str:
         if not self.session.source or not self.session.book:
             raise ValueError("No active book")
         if chapter_index < 0 or chapter_index >= len(self.session.chapters):
             raise IndexError("Chapter index out of range")
         chapter = self.session.chapters[chapter_index]
+        if force_refresh:
+            self.state.invalidate_cached_content(self.session.source, self.session.book, chapter)
         cached = self.state.get_cached_content(self.session.source, self.session.book, chapter)
         if cached is None:
             next_chapter = (

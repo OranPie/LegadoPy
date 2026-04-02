@@ -66,6 +66,7 @@ from legado_engine import (
     submit_source_form_detailed, execute_source_ui_action,
 )
 from legado_engine.analyze.analyze_url import AnalyzeUrl
+from legado_gui.controller import _rank_search_results
 from reader_state import ReaderState
 
 
@@ -1480,6 +1481,7 @@ class SearchScreen(Screen):
         Binding("escape", "app.pop_screen", "返回"),
         Binding("/",      "focus_search", "聚焦搜索"),
         Binding("r",      "refresh_results", "刷新"),
+        Binding("R",      "force_refresh",   "强制刷新", show=False),
         Binding("b",      "open_bookshelf", "书架"),
         Binding("t",      "open_reader_settings", "设置"),
         Binding("a",      "open_source_ui", "认证"),
@@ -1538,7 +1540,11 @@ class SearchScreen(Screen):
         self.query_one("#search-input", Input).focus()
 
     def action_refresh_results(self) -> None:
-        self._do_search()
+        self._do_search(force_refresh=False)
+
+    def action_force_refresh(self) -> None:
+        """R — bypass cache and re-fetch search results."""
+        self._do_search(force_refresh=True)
 
     def action_open_bookshelf(self) -> None:
         self.app.open_bookshelf()
@@ -1580,22 +1586,23 @@ class SearchScreen(Screen):
     def search_submitted(self) -> None:
         self._do_search()
 
-    def _do_search(self) -> None:
+    def _do_search(self, force_refresh: bool = False) -> None:
         if not self.source:
             self.app.warn("请先加载书源。")
             return
         query = self.query_one("#search-input", Input).value.strip()
         if not query:
             return
-        self._run_search(query)
+        self._run_search(query, force_refresh)
 
     @work(thread=True)
-    def _run_search(self, query: str) -> None:
+    def _run_search(self, query: str, force_refresh: bool = False) -> None:
         self.app.call_from_thread(
             lambda: setattr(self.query_one("#search-loading"), "display", True)
         )
         try:
             results = search_book(self.source, query)
+            results = _rank_search_results(results, query)
         except Exception as e:
             self.app.call_from_thread(self.app.error, f"搜索失败：{e}")
             results = []
@@ -1986,7 +1993,8 @@ class ChapterListScreen(Screen):
         Binding("escape", "app.pop_screen", "返回"),
         Binding("b",      "open_bookshelf", "书架"),
         Binding("t",      "open_reader_settings", "设置"),
-        Binding("r",      "reload",         "刷新"),
+        Binding("r",      "reload",          "刷新"),
+        Binding("R",      "force_reload",    "强制刷新", show=False),
         Binding("/",      "focus_filter",   "筛选"),
         Binding("j",      "jump_to_chapter", "跳转"),
         Binding("g",      "goto_last_read", "继续阅读"),
@@ -2041,6 +2049,20 @@ class ChapterListScreen(Screen):
     def action_reload(self) -> None:
         self._book.tocHtml = None
         self.query_one("#ch-loading").display = True
+        self._load_chapters()
+
+    def action_force_reload(self) -> None:
+        """R — clear the chapter list cache and re-fetch from source."""
+        self._book.tocHtml = None
+        # Clear any controller chapter cache too
+        ctrl = getattr(self.app, "_ctrl", None)
+        if ctrl:
+            from legado_gui.controller import ReaderController
+            if isinstance(ctrl, ReaderController):
+                cache_key = ctrl._chapter_cache_key(self._source, self._book)
+                ctrl._chapter_cache.pop(cache_key, None)
+        self.query_one("#ch-loading").display = True
+        self.query_one("#ch-table", DataTable).clear()
         self._load_chapters()
 
     def action_focus_filter(self) -> None:

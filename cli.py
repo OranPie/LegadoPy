@@ -56,6 +56,8 @@ from legado_engine.auth.login import (
     parse_source_ui,
     submit_source_form_detailed,
 )
+from legado_engine.web_book.web_book import search_books_parallel
+from legado_gui.controller import _rank_search_results
 
 console = Console()
 
@@ -107,8 +109,25 @@ def cmd_search(args):
     src = load_source(args.source)
     console.print(f"[bold]Source:[/bold] {src.bookSourceName}  [dim]{src.bookSourceUrl}[/dim]")
 
-    with spinner(f"Searching for '{args.query}' (page {args.page})…"):
-        results = search_book(src, args.query, page=args.page)
+    # Multi-source search if --sources flag provided
+    extra_sources: List[BookSource] = []
+    if getattr(args, "sources", None):
+        for spath in args.sources:
+            try:
+                extra_sources.append(load_source(spath))
+            except Exception as e:
+                console.print(f"[yellow]警告：跳过书源 {spath}: {e}[/yellow]")
+
+    if extra_sources:
+        all_sources = [src] + extra_sources
+        console.print(f"[dim]并行搜索 {len(all_sources)} 个书源…[/dim]")
+        with spinner(f"Searching '{args.query}' across {len(all_sources)} sources…"):
+            results = search_books_parallel(all_sources, args.query, page=args.page)
+    else:
+        with spinner(f"Searching for '{args.query}' (page {args.page})…"):
+            results = search_book(src, args.query, page=args.page)
+
+    results = _rank_search_results(results, args.query)
 
     if not results:
         console.print("[yellow]No results found.[/yellow]")
@@ -396,6 +415,13 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("source", help="Path to BookSource JSON file")
     ps.add_argument("query", help="Search keyword")
     ps.add_argument("--page", type=int, default=1, metavar="N")
+    ps.add_argument(
+        "--sources",
+        action="append",
+        default=[],
+        metavar="SOURCE",
+        help="Additional source JSON files for parallel multi-source search (may be repeated)",
+    )
 
     # info
     pi = sub.add_parser("info", help="Fetch book metadata")

@@ -254,6 +254,19 @@ class ReaderState:
         path = self.cache_dir / f"{self.chapter_cache_key(source, book, chapter)}.txt"
         path.write_text(text, encoding="utf-8")
 
+    def invalidate_cached_content(
+        self,
+        source: BookSource,
+        book: Book,
+        chapter: BookChapter,
+    ) -> None:
+        """Delete the on-disk cache entry for a single chapter."""
+        path = self.cache_dir / f"{self.chapter_cache_key(source, book, chapter)}.txt"
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def preload_chapters(
         self,
         source: BookSource,
@@ -264,44 +277,65 @@ class ReaderState:
     ) -> None:
         if count <= 0:
             return
+        # Only serialise the chapters we'll actually fetch (skip already-cached ones)
+        start = current_index + 1
+        stop = min(len(chapters), start + count)
+        targets = [i for i in range(start, stop)
+                   if self.get_cached_content(source, book, chapters[i]) is None]
+        if not targets:
+            return
+
         source_data = source.to_dict()
         book_data = self._serialize_book(book)
         chapter_data = [self._serialize_chapter(ch) for ch in chapters]
-        preload_key = self._book_key(source, book)
+
+        # Use per-chapter keys so multiple chapters can preload simultaneously
         with self._lock:
-            if preload_key in self._active_preloads:
-                return
-            self._active_preloads.add(preload_key)
+            new_targets = [i for i in targets
+                           if f"{self._book_key(source, book)}:{i}" not in self._active_preloads]
+            for i in new_targets:
+                self._active_preloads.add(f"{self._book_key(source, book)}:{i}")
+        if not new_targets:
+            return
+
         _preload_pool.submit(
             self._preload_worker,
-            preload_key, source_data, book_data, chapter_data, current_index, count,
+            self._book_key(source, book), source_data, book_data,
+            chapter_data, new_targets,
         )
 
     def _preload_worker(
         self,
-        preload_key: str,
+        book_key: str,
         source_data: Dict[str, Any],
         book_data: Dict[str, Any],
         chapter_data: List[Dict[str, Any]],
-        current_index: int,
-        count: int,
+        target_indices: List[int],
     ) -> None:
+        """Fetch target chapter indices concurrently, write each to disk as it finishes."""
+        from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _as_completed
+
+        source = BookSource.from_dict(source_data)
+        book = self._deserialize_book(book_data)
+        chapters = [self._deserialize_chapter(ch) for ch in chapter_data]
+
+        def _fetch(idx: int) -> tuple[int, str]:
+            chapter = chapters[idx]
+            next_chapter = chapters[idx + 1] if idx + 1 < len(chapters) else None
+            return idx, get_content(source, book, chapter, next_chapter)
+
+        n_workers = min(len(target_indices), 4)
         try:
-            source = BookSource.from_dict(source_data)
-            book = self._deserialize_book(book_data)
-            chapters = [self._deserialize_chapter(ch) for ch in chapter_data]
-            start = current_index + 1
-            stop = min(len(chapters), start + count)
-            for idx in range(start, stop):
-                chapter = chapters[idx]
-                if self.get_cached_content(source, book, chapter) is not None:
-                    continue
-                next_chapter = chapters[idx + 1] if idx + 1 < len(chapters) else None
-                try:
-                    text = get_content(source, book, chapter, next_chapter)
-                except Exception:
-                    continue
-                self.set_cached_content(source, book, chapter, text)
+            with _TPE(max_workers=n_workers, thread_name_prefix="legado-preload-inner") as pool:
+                futures = {pool.submit(_fetch, i): i for i in target_indices}
+                for fut in _as_completed(futures):
+                    idx = futures[fut]
+                    try:
+                        _, text = fut.result()
+                        self.set_cached_content(source, book, chapters[idx], text)
+                    except Exception:
+                        pass
         finally:
             with self._lock:
-                self._active_preloads.discard(preload_key)
+                for i in target_indices:
+                    self._active_preloads.discard(f"{book_key}:{i}")

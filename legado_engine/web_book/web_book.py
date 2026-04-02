@@ -295,6 +295,7 @@ def get_chapter_list(
 ) -> List[BookChapter]:
     """
     Fetch the table of contents and return a list of BookChapter objects.
+    Mirrors WebBook.getChapterListAwait() including preUpdateJs execution.
     """
     engine = resolve_engine(engine)
     toc_url = book.tocUrl or book.bookUrl
@@ -305,6 +306,22 @@ def get_chapter_list(
         toc_url=toc_url,
     )
     try:
+        # Execute preUpdateJs before fetching the TOC (mirrors WebBook.kt:213-221)
+        toc_rule = book_source.get_toc_rule()
+        pre_update_js = toc_rule.preUpdateJs if toc_rule else None
+        if pre_update_js and str(pre_update_js).strip():
+            try:
+                from ..js import eval_js, JsExtensions
+                rule = AnalyzeRule(book=book, book_source=book_source, pre_update_js=True)
+                rule.eval_js(str(pre_update_js))
+            except Exception as _pre_exc:
+                trace_exception(
+                    "web_book.chapters.preUpdateJs_failed",
+                    _pre_exc,
+                    source=snapshot_source(book_source),
+                    book=snapshot_book(book),
+                )
+
         if book.tocHtml and book.tocUrl == toc_url:
             body = book.tocHtml
             base_url = toc_url
