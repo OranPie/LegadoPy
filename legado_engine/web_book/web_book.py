@@ -280,6 +280,8 @@ def get_book_info(
             can_rename,
             engine=engine,
         )
+        # Mirror WebBook.kt:158 — addType after book info analysis
+        book.add_type(book.get_book_type(book_source.bookSourceType or 0))
         trace_event(
             "web_book.book_info.complete",
             source=snapshot_source(book_source),

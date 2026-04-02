@@ -102,6 +102,15 @@ def main() -> int:
             result = result[0] if result else None
     elif operation == "get_elements":
         result = analyze_rule.get_elements(payload.get("rule") or "")
+    elif operation == "t2s":
+        from .utils.content_help import chinese_convert
+        result = chinese_convert(payload.get("text") or "", 2)  # traditional → simplified (T2S = mode 2)
+    elif operation == "s2t":
+        from .utils.content_help import chinese_convert
+        result = chinese_convert(payload.get("text") or "", 1)  # simplified → traditional (S2T = mode 1)
+    elif operation == "toNumChapter":
+        from .utils.content_help import to_num_chapter
+        result = to_num_chapter(payload.get("text") or "")
     else:
         raise ValueError(f"Unsupported operation: {operation}")
 

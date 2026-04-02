@@ -177,3 +177,121 @@ def _find_new_lines(s: str) -> str:
     # Split after every sentence-ending punctuation followed by a quote
     result = re.sub(r'([。！？!?][""」』]?)(?=[^\n])', r'\1\n', s)
     return result
+
+
+# ── toNumChapter: mirrors StringUtils.chineseNumToInt + JsExtensions.toNumChapter ──
+
+# Mapping from Chinese numeral chars to integer values (same as Kotlin ChnMap)
+_CHN_MAP: dict[str, int] = {
+    '〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+    '六': 6, '七': 7, '八': 8, '九': 9,
+    '壹': 1, '贰': 2, '叁': 3, '肆': 4, '伍': 5,
+    '陆': 6, '柒': 7, '捌': 8, '玖': 9,
+    '十': 10, '拾': 10, '百': 100, '佰': 100,
+    '千': 1000, '仟': 1000, '万': 10000, '亿': 100000000,
+}
+
+# Pattern: 第<num_part>章  (same as AppPattern.titleNumPattern)
+_TITLE_NUM_PATTERN = re.compile(r'^(第)(.+?)(章.*)$')
+
+
+def _full_to_half(s: str) -> str:
+    """Convert fullwidth ASCII to halfwidth (mirrors StringUtils.fullToHalf)."""
+    result = []
+    for ch in s:
+        code = ord(ch)
+        if code == 12288:
+            result.append(' ')
+        elif 65281 <= code <= 65374:
+            result.append(chr(code - 65248))
+        else:
+            result.append(ch)
+    return ''.join(result)
+
+
+def _chinese_num_to_int(ch_num: str) -> int:
+    """
+    Convert Chinese numeral string to integer.
+    Mirrors StringUtils.chineseNumToInt().
+    Returns -1 on failure.
+    """
+    ch_num = ch_num.strip()
+    if not ch_num:
+        return -1
+
+    # Fast path: pure digit string
+    try:
+        return int(ch_num)
+    except ValueError:
+        pass
+
+    # "一零二五" style — every char is a digit character
+    digit_only = set('〇零一二三四五六七八九壹贰叁肆伍陆柒捌玖')
+    if len(ch_num) > 1 and all(c in digit_only for c in ch_num):
+        try:
+            return int(''.join(str(_CHN_MAP[c]) for c in ch_num))
+        except (KeyError, ValueError):
+            pass
+
+    # "一千零二十五" style
+    result = 0
+    tmp = 0
+    billion = 0
+    try:
+        for i, ch in enumerate(ch_num):
+            tmp_num = _CHN_MAP.get(ch)
+            if tmp_num is None:
+                return -1
+            if tmp_num == 100000000:
+                result += tmp
+                result *= tmp_num
+                billion = billion * 100000000 + result
+                result = 0
+                tmp = 0
+            elif tmp_num == 10000:
+                result += tmp
+                result *= tmp_num
+                tmp = 0
+            elif tmp_num >= 10:
+                if tmp == 0:
+                    tmp = 1
+                result += tmp_num * tmp
+                tmp = 0
+            else:
+                prev_map = _CHN_MAP.get(ch_num[i - 1], 0) if i >= 1 else 0
+                if i >= 2 and i == len(ch_num) - 1 and prev_map > 10:
+                    tmp = tmp_num * prev_map // 10
+                else:
+                    tmp = tmp * 10 + tmp_num
+        return result + tmp + billion
+    except Exception:
+        return -1
+
+
+def _string_to_int(s: str) -> int:
+    """
+    Convert a string (possibly Chinese numerals or fullwidth digits) to int.
+    Mirrors StringUtils.stringToInt().
+    """
+    s = _full_to_half(s).replace(' ', '').replace('\t', '')
+    try:
+        return int(s)
+    except ValueError:
+        return _chinese_num_to_int(s)
+
+
+def to_num_chapter(s: str) -> str:
+    """
+    Convert a chapter title with Chinese numerals to Arabic numeral form.
+    E.g. "第一千零二十五章 标题" → "第1025章 标题"
+    Mirrors JsExtensions.toNumChapter().
+    """
+    if not s:
+        return s
+    m = _TITLE_NUM_PATTERN.match(s)
+    if m:
+        prefix, num_part, suffix = m.group(1), m.group(2), m.group(3)
+        int_val = _string_to_int(num_part)
+        if int_val >= 0:
+            return f"{prefix}{int_val}{suffix}"
+    return s

@@ -810,6 +810,37 @@ function run(ctx) {
             ctx._events.browserUrl = String(url || "");
             ctx._events.browserTitle = String(title || "");
         },
+        // Chinese simplified↔traditional conversion (stub — full conversion needs opencc)
+        t2s: function(text) {
+            // Mirror JsExtensions.t2s(): traditional → simplified
+            // Real conversion requires opencc; return as-is for now but delegate via bridge if available
+            try {
+                var r = analyzeRuleBridge({operation: 't2s', text: String(text || "")});
+                return (r && r.result != null) ? String(r.result) : String(text || "");
+            } catch(e) { return String(text || ""); }
+        },
+        s2t: function(text) {
+            // Mirror JsExtensions.s2t(): simplified → traditional
+            try {
+                var r = analyzeRuleBridge({operation: 's2t', text: String(text || "")});
+                return (r && r.result != null) ? String(r.result) : String(text || "");
+            } catch(e) { return String(text || ""); }
+        },
+        // toNumChapter: convert Chinese numeral chapter title to numeric form
+        toNumChapter: function(s) {
+            if (s == null) return null;
+            try {
+                var r = analyzeRuleBridge({operation: 'toNumChapter', text: String(s)});
+                return (r && r.result != null) ? String(r.result) : String(s);
+            } catch(e) { return String(s); }
+        },
+        // ajaxAll: fetch multiple URLs concurrently, returns array of StrResponse
+        ajaxAll: function(urlList) {
+            try {
+                if (!Array.isArray(urlList)) return [];
+                return urlList.map(function(url) { return java.ajax(url); });
+            } catch(e) { return []; }
+        },
         qread: function() { return false; }
     };
     

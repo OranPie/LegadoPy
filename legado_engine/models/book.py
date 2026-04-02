@@ -178,17 +178,26 @@ class Book(RuleData):
     def is_local(self) -> bool:
         return bool(self.type & BookType.local)
 
+    def add_type(self, book_type: int) -> None:
+        """Bitwise-OR the given BookType flag into self.type (mirrors Kotlin Book.addType)."""
+        self.type = self.type | book_type
+
+    def has_type(self, book_type: int) -> bool:
+        """Check if this book has a given BookType flag set."""
+        return bool(self.type & book_type)
+
     def get_book_type(self, source_type: int) -> int:
         """
-        Derive BookType bitmask from BookSourceType (mirrors Kotlin Book.getBookType()).
-        BookSourceType: 0=text, 1=audio, 2=image, 3=webFile
+        Derive BookType bitmask from BookSourceType (mirrors BookSourceExtensions.getBookType()).
+        BookSourceType: 0=text, 1=audio, 2=image, 3=file (webFile)
         """
         if source_type == 1:
             return BookType.audio
         if source_type == 2:
             return BookType.image
         if source_type == 3:
-            return BookType.webFile
+            # file type: can be downloaded (webFile) but still text content
+            return BookType.text | BookType.webFile
         return BookType.text
 
 
