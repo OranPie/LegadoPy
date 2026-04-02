@@ -1295,6 +1295,150 @@ class ReaderSettingsScreen(ModalScreen):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SOURCE TEST SCREEN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SourceTestScreen(Screen):
+    """Quick source verification screen (mirrors CheckSourceService logic)."""
+
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "返回"),
+        Binding("r", "run_test", "运行测试"),
+    ]
+
+    _TEST_KEYWORD = "斗破苍穹"  # common test keyword
+
+    def __init__(self, source: "BookSource") -> None:
+        super().__init__()
+        self._source = source
+        self._running = False
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical(id="source-test-body"):
+            yield Label(
+                f"🔬 书源测试：{self._source.bookSourceName or self._source.bookSourceUrl}",
+                id="source-test-title",
+            )
+            with Horizontal(id="source-test-keyword-row"):
+                yield Label("测试关键词：")
+                yield Input(value=self._TEST_KEYWORD, id="source-test-keyword")
+                yield Button("开始测试", variant="primary", id="btn-test-run")
+            yield Static("", id="source-test-results")
+            with Horizontal(id="source-test-footer"):
+                yield Button("返回", id="btn-test-back")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.sub_title = "书源测试"
+
+    def action_run_test(self) -> None:
+        if not self._running:
+            self._start_test()
+
+    @on(Button.Pressed, "#btn-test-run")
+    def _run_pressed(self) -> None:
+        self.action_run_test()
+
+    @on(Button.Pressed, "#btn-test-back")
+    def _back_pressed(self) -> None:
+        self.app.pop_screen()
+
+    def _start_test(self) -> None:
+        self._running = True
+        keyword = self.query_one("#source-test-keyword", Input).value.strip() or self._TEST_KEYWORD
+        self.query_one("#source-test-results", Static).update(
+            "⏳ 正在测试搜索…"
+        )
+        self.query_one("#btn-test-run", Button).disabled = True
+        self._do_test(keyword)
+
+    @work(thread=True)
+    def _do_test(self, keyword: str) -> None:
+        import time
+        lines: list[str] = []
+
+        def _update(msg: str) -> None:
+            lines.append(msg)
+            self.app.call_from_thread(
+                self.query_one("#source-test-results", Static).update,
+                "\n".join(lines),
+            )
+
+        # 1. Search test
+        if self._source.searchUrl:
+            t0 = time.time()
+            try:
+                results = search_book(self._source, keyword)
+                elapsed = time.time() - t0
+                if results:
+                    first = results[0]
+                    _update(f"✅ 搜索 ({elapsed:.1f}s): 找到 {len(results)} 条，第一条：{first.name} - {first.author}")
+                else:
+                    _update(f"⚠️ 搜索 ({elapsed:.1f}s): 0 条结果")
+            except Exception as e:
+                _update(f"❌ 搜索失败 ({time.time()-t0:.1f}s): {e}")
+                results = []
+
+            # 2. Book info test (if search succeeded)
+            if results:
+                book = results[0].to_book()
+                t0 = time.time()
+                try:
+                    book_info = get_book_info(self._source, book)
+                    elapsed = time.time() - t0
+                    _update(f"✅ 书籍信息 ({elapsed:.1f}s): {book_info.name} - 简介长度 {len(book_info.intro or '')}")
+                except Exception as e:
+                    _update(f"❌ 书籍信息失败 ({time.time()-t0:.1f}s): {e}")
+                    book_info = book
+
+                # 3. Chapter list test
+                t0 = time.time()
+                try:
+                    chapters = get_chapter_list(self._source, book_info)
+                    elapsed = time.time() - t0
+                    _update(f"✅ 目录 ({elapsed:.1f}s): {len(chapters)} 章，第一章：{chapters[0].title if chapters else '无'}")
+                except Exception as e:
+                    _update(f"❌ 目录失败 ({time.time()-t0:.1f}s): {e}")
+                    chapters = []
+
+                # 4. Content test
+                if chapters:
+                    t0 = time.time()
+                    try:
+                        content = get_content(self._source, book_info, chapters[0])
+                        elapsed = time.time() - t0
+                        preview = (content or "")[:80].replace("\n", " ")
+                        _update(f"✅ 正文 ({elapsed:.1f}s): {len(content or '')} 字，预览：{preview}…")
+                    except Exception as e:
+                        _update(f"❌ 正文失败 ({time.time()-t0:.1f}s): {e}")
+        else:
+            _update("⚠️ 该书源无搜索链接，跳过搜索测试")
+
+        # 5. Explore test
+        if self._source.exploreUrl:
+            t0 = time.time()
+            try:
+                explore_kinds = list(__import__("legado_engine", fromlist=["get_explore_kinds"]).get_explore_kinds(self._source))
+                if explore_kinds:
+                    from legado_engine import explore_book
+                    exp_results = explore_book(self._source, explore_kinds[0].url or "")
+                    elapsed = time.time() - t0
+                    _update(f"✅ 发现 ({elapsed:.1f}s): {len(exp_results)} 条结果")
+                else:
+                    _update("⚠️ 发现分类为空")
+            except Exception as e:
+                _update(f"❌ 发现失败 ({time.time()-t0:.1f}s): {e}")
+
+        _update("\n── 测试完成 ──")
+        self.app.call_from_thread(self._on_test_done)
+
+    def _on_test_done(self) -> None:
+        self._running = False
+        self.query_one("#btn-test-run", Button).disabled = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # BOOKSHELF SCREEN
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1326,6 +1470,7 @@ class BookshelfScreen(Screen):
                 yield Button("🔍 搜索", variant="primary", id="btn-shelf-search")
                 yield Button("🧭 发现", id="btn-shelf-discover")
                 yield Button("🔐 认证", id="btn-shelf-source-ui")
+                yield Button("✅ 测试", id="btn-shelf-test-source")
                 yield Button("⚙ 设置", id="btn-shelf-settings")
                 yield Button("📂 书源", id="btn-shelf-load")
                 yield Button("🗑 移除", variant="error", id="btn-shelf-remove")
@@ -1517,6 +1662,14 @@ class BookshelfScreen(Screen):
     @on(Button.Pressed, "#btn-shelf-source-ui")
     def shelf_source_ui_pressed(self) -> None:
         self.action_open_source_ui()
+
+    @on(Button.Pressed, "#btn-shelf-test-source")
+    def shelf_test_source_pressed(self) -> None:
+        src = self.app.source
+        if not src:
+            self.app.warn("请先加载书源。")
+            return
+        self.app.push_screen(SourceTestScreen(src))
 
     @on(Button.Pressed, "#btn-shelf-settings")
     def shelf_settings_pressed(self) -> None:
