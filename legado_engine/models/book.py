@@ -165,6 +165,12 @@ class BookChapter(RuleData):
     isPay: bool = False
     wordCount: str | None = None
     titleMD5: str | None = None
+    # Set after content fetch: names of replace rules that actually changed the content
+    effectiveReplaceRules: list = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.effectiveReplaceRules is None:
+            self.effectiveReplaceRules = []
 
     def get_display_title(self, replace_rules=None, use_replace=True) -> str:
         if not use_replace:

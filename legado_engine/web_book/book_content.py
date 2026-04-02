@@ -131,7 +131,13 @@ def analyze_content(
         normalized = "\n".join(line.strip() for line in content.splitlines())
         content = analyze_rule.get_string(content_rule.replaceRegex, normalized, unescape=False)
         content = "\n".join(f"　　{line}" if line else "" for line in content.splitlines())
-    content = engine.apply_content(content, source=book_source, book=book, chapter=chapter, use_replace=book.get_use_replace_rule())
+    content, effective_rules = engine.apply_replace_rules_tracked(
+        content, source=book_source, book=book, chapter=chapter,
+        is_title=False, is_content=True,
+        use_replace=book.get_use_replace_rule(),
+    )
+    # Store for debugging/UI display (mirrors Kotlin effectiveReplaceRules)
+    chapter.effectiveReplaceRules = [getattr(r, "name", str(r)) for r in effective_rules]
     content = _post_process_content(content, book, chapter)
     if not chapter.isVolume and not content.strip():
         raise ValueError("Content is empty")

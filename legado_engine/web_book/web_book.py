@@ -493,12 +493,16 @@ def search_books_parallel(
     key: str,
     page: int = 1,
     filter_fn: Optional[Callable[[str, str], bool]] = None,
+    should_break_fn: Optional[Callable[[List["SearchBook"]], bool]] = None,
     engine=None,
 ) -> List[SearchBook]:
     """
     Search multiple book sources concurrently and return merged results.
     Sources that raise exceptions are silently skipped.
     Concurrency is controlled by the engine's shared executor.
+
+    should_break_fn(results_so_far) → bool: called after each source completes;
+      return True to cancel remaining in-flight searches early.
     """
     engine = resolve_engine(engine)
     if not sources:
@@ -517,6 +521,11 @@ def search_books_parallel(
             all_results.extend(fut.result())
         except Exception:
             pass
+        if should_break_fn and should_break_fn(all_results):
+            # Cancel remaining futures (best-effort)
+            for remaining in futures:
+                remaining.cancel()
+            break
 
     # De-duplicate by bookUrl while preserving order
     seen: set = set()
@@ -616,3 +625,72 @@ def do_login(
         bindings={"source": book_source, "engine": engine},
         java_obj=JsExtensions(engine=engine),
     )
+
+
+# ─── Reviews ─────────────────────────────────────────────────────────────────
+
+def get_reviews(
+    book_source: "BookSource",
+    book: "Book",
+    chapter: Optional["BookChapter"] = None,
+    page: int = 1,
+    engine=None,
+) -> List[dict]:
+    """
+    Fetch paragraph/book reviews using ruleReview (mirrors ReviewRule.kt).
+
+    Returns a list of dicts with keys: avatar, content, postTime.
+    Empty list if the source has no reviewUrl or rule is incomplete.
+    """
+    engine = resolve_engine(engine)
+    review_rule = book_source.get_review_rule()
+    if not review_rule.reviewUrl:
+        return []
+
+    rule_data = chapter if chapter is not None else book
+    try:
+        au = AnalyzeUrl(
+            m_url=review_rule.reviewUrl,
+            source=book_source,
+            rule_data=rule_data,
+            page=page,
+            engine=engine,
+        )
+        res = au.get_str_response()
+        res = run_login_check(au, book_source, res)
+        if not res.body:
+            return []
+
+        ar = AnalyzeRule(book, book_source, engine=engine)
+        ar.set_content(res.body).set_base_url(res.url)
+
+        # Each review item is a separate element (list of comment nodes)
+        items: list = ar.get_elements(review_rule.contentRule or "") if review_rule.contentRule else []
+        if not items:
+            # Try flat extraction: content, avatar, time from top-level
+            content_list = ar.get_string_list(review_rule.contentRule or "") if review_rule.contentRule else []
+            avatar_list = ar.get_string_list(review_rule.avatarRule or "") if review_rule.avatarRule else []
+            time_list = ar.get_string_list(review_rule.postTimeRule or "") if review_rule.postTimeRule else []
+            return [
+                {
+                    "content": content_list[i] if i < len(content_list) else "",
+                    "avatar": avatar_list[i] if i < len(avatar_list) else "",
+                    "postTime": time_list[i] if i < len(time_list) else "",
+                }
+                for i in range(len(content_list))
+            ]
+
+        reviews: List[dict] = []
+        for item in items:
+            item_ar = AnalyzeRule(book, book_source, engine=engine)
+            item_ar.set_content(item).set_base_url(res.url)
+            reviews.append({
+                "content": item_ar.get_string(review_rule.contentRule or "") if review_rule.contentRule else "",
+                "avatar": item_ar.get_string(review_rule.avatarRule or "") if review_rule.avatarRule else "",
+                "postTime": item_ar.get_string(review_rule.postTimeRule or "") if review_rule.postTimeRule else "",
+            })
+        return reviews
+
+    except Exception as e:
+        trace_exception("web_book.get_reviews", e)
+        return []

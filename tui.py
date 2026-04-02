@@ -2931,8 +2931,11 @@ class BookScreen(Screen):
                 key=str(ch.index),
             )
 
+        word_count_str = self._book.wordCount or ""
         self.query_one("#chapter-count", Label).update(
-            f"[dim]{len(chapters)} 章[/dim]"
+            f"[dim]{len(chapters)} 章"
+            + (f"  {word_count_str}" if word_count_str else "")
+            + "[/dim]"
         )
 
         has_progress = bool(progress.get("chapter_index") is not None)

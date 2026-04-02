@@ -177,6 +177,36 @@ class LegadoEngine:
                 result = rule.apply(result)
         return result
 
+    def apply_replace_rules_tracked(
+        self,
+        text: str | None,
+        *,
+        is_title: bool,
+        is_content: bool,
+        source: Any = None,
+        book: Any = None,
+        chapter: Any = None,
+        article: Any = None,
+        use_replace: bool = True,
+    ) -> tuple[str, list]:
+        """Like apply_replace_rules, but also returns the list of rules that changed the text."""
+        if not text or not use_replace:
+            return text or "", []
+        context = self.build_replace_context(source=source, book=book, chapter=chapter, article=article)
+        result = text
+        effective: list = []
+        for rule in self._iter_sorted_rules():
+            if getattr(rule, "applies_to", None) and rule.applies_to(
+                context.tokens(),
+                is_title=is_title,
+                is_content=is_content,
+            ):
+                new_result = rule.apply(result)
+                if new_result != result:
+                    effective.append(rule)
+                result = new_result
+        return result, effective
+
     def apply_title(self, text: str | None, **context: Any) -> str:
         return self.apply_replace_rules(text, is_title=True, is_content=False, **context)
 

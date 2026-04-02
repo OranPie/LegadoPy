@@ -9,6 +9,7 @@ from .web_book import (
     get_book_info,
     get_chapter_list,
     get_content,
+    get_reviews,
     VipContentError,
 )
 from .book_list import analyze_book_list
@@ -24,6 +25,7 @@ __all__ = [
     "get_book_info",
     "get_chapter_list",
     "get_content",
+    "get_reviews",
     "VipContentError",
     "analyze_book_list",
     "analyze_book_info",

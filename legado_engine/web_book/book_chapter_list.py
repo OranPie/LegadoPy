@@ -5,11 +5,15 @@ from __future__ import annotations
 from concurrent.futures import Future, as_completed
 from typing import Any, Callable, List, Optional, Tuple, TYPE_CHECKING
 
+import logging
+
 from ..engine import resolve_engine
 from ..analyze.analyze_rule import AnalyzeRule
 from ..analyze.analyze_url import AnalyzeUrl
 from ..models.book import BookChapter
 from ..utils.network_utils import get_absolute_url
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..models.book_source import BookSource, TocRule
@@ -132,6 +136,25 @@ def analyze_chapter_list(
     # Assign indices
     for i, ch in enumerate(chapter_list):
         ch.index = i
+
+    # Execute formatJs to post-process chapter titles (mirrors Kotlin BookChapterList.kt:134-152)
+    format_js = toc_rule.formatJs
+    if format_js:
+        try:
+            from ..js.eval import eval_js
+            gInt = 0
+            for i, ch in enumerate(chapter_list):
+                try:
+                    ctx = {"index": i + 1, "title": ch.title, "gInt": gInt}
+                    result = eval_js(format_js, bindings=ctx)
+                    if result is not None:
+                        new_title = str(result).strip()
+                        if new_title:
+                            ch.title = new_title
+                except Exception as _e:
+                    logger.debug("formatJs title error ch[%d]: %s", i, _e)
+        except ImportError:
+            pass
 
     book.totalChapterNum = len(chapter_list)
     if chapter_list:
