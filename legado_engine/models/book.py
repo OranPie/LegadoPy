@@ -98,6 +98,9 @@ class Book(RuleData):
     def get_reverse_toc(self) -> bool:
         return self._reverse_toc
 
+    def set_reverse_toc(self, value: bool) -> None:
+        self._reverse_toc = bool(value)
+
     def get_use_replace_rule(self) -> bool:
         return self._use_replace_rule
 

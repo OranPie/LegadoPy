@@ -1527,6 +1527,53 @@ class BookshelfScreen(Screen):
 # SEARCH & DISCOVER SCREENS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class _SearchHistoryPickerScreen(ModalScreen):
+    """Popup to pick from search history; dismisses with selected query."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss_none", "取消"),
+        Binding("enter",  "select",       "选择"),
+    ]
+
+    def __init__(self, history: list) -> None:
+        super().__init__()
+        self._history = history
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="history-picker-container"):
+            yield Label("🕐 搜索历史", id="history-picker-title")
+            table = DataTable(id="history-picker-table", cursor_type="row")
+            table.add_columns("关键词")
+            for item in self._history:
+                table.add_row(item, key=item)
+            yield table
+            with Horizontal():
+                yield Button("选择", variant="primary", id="btn-hist-select")
+                yield Button("取消", id="btn-hist-cancel")
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
+
+    def action_select(self) -> None:
+        table = self.query_one("#history-picker-table", DataTable)
+        if table.cursor_row < 0 or table.cursor_row >= len(self._history):
+            self.dismiss(None)
+            return
+        self.dismiss(self._history[table.cursor_row])
+
+    @on(Button.Pressed, "#btn-hist-select")
+    def _select_pressed(self) -> None:
+        self.action_select()
+
+    @on(Button.Pressed, "#btn-hist-cancel")
+    def _cancel_pressed(self) -> None:
+        self.dismiss(None)
+
+    @on(DataTable.RowSelected, "#history-picker-table")
+    def _row_selected(self, event: DataTable.RowSelected) -> None:
+        self.dismiss(str(event.row_key.value) if event.row_key else None)
+
+
 class SearchScreen(Screen):
     """Search screen with results table and quick access to other features."""
 
@@ -1605,21 +1652,22 @@ class SearchScreen(Screen):
         self.app.notify(f"搜索模式：{mode}", title="搜索设置")
 
     def action_show_history(self) -> None:
-        """H — fill search input with last query from history."""
+        """H — show search history picker; fills input on select."""
         history = self.app.state.get_search_history()
         if not history:
             self.app.notify("暂无搜索历史", severity="warning")
             return
-        inp = self.query_one("#search-input", Input)
-        # Cycle through history: if current input matches first entry, use second
-        current = inp.value.strip()
-        for entry in history:
-            if entry != current:
-                inp.value = entry
+
+        def _on_picked(result: Optional[str]) -> None:
+            if result:
+                inp = self.query_one("#search-input", Input)
+                inp.value = result
                 inp.focus()
-                return
-        inp.value = history[0]
-        inp.focus()
+
+        self.app.push_screen(
+            _SearchHistoryPickerScreen(history),
+            _on_picked,
+        )
 
     def action_refresh_results(self) -> None:
         self._do_search(force_refresh=False)
@@ -2112,6 +2160,12 @@ class ChapterListScreen(Screen):
             with Horizontal(id="chapters-top"):
                 yield Input(placeholder="🔍 筛选章节…", id="chapter-filter")
                 yield Button("跳转", id="btn-ch-jump")
+                rev = self._book.get_reverse_toc()
+                yield Button(
+                    "倒序 ✓" if rev else "倒序",
+                    id="btn-ch-reverse",
+                    variant="primary" if rev else "default",
+                )
                 yield Button("继续", variant="primary", id="btn-ch-resume")
                 yield Label("", id="chapter-count")
 
@@ -2301,6 +2355,17 @@ class ChapterListScreen(Screen):
     @on(Button.Pressed, "#btn-ch-jump")
     def jump_pressed(self) -> None:
         self.action_jump_to_chapter()
+
+    @on(Button.Pressed, "#btn-ch-reverse")
+    def reverse_toc_pressed(self) -> None:
+        new_val = not self._book.get_reverse_toc()
+        self._book.set_reverse_toc(new_val)
+        btn = self.query_one("#btn-ch-reverse", Button)
+        btn.label = "倒序 ✓" if new_val else "倒序"
+        btn.variant = "primary" if new_val else "default"
+        # Re-load chapters with the new order
+        self.query_one("#ch-loading").display = True
+        self._load_chapters()
 
     @on(Button.Pressed, "#btn-ch-resume")
     def resume_pressed(self) -> None:

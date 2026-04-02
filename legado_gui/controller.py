@@ -380,8 +380,11 @@ class ReaderController:
             self._chapter_cache[cache_key] = copy.deepcopy(chapters)
             if chapter_batch_fn:
                 chapter_batch_fn(list(chapters))
-        self.session.chapters = chapters
-        return chapters
+        # Apply reverseToc if the book config requests it
+        if self.session.book and self.session.book.get_reverse_toc():
+            chapters = list(reversed(chapters))
+            for i, ch in enumerate(chapters):
+                ch.index = i
         self.session.chapters = chapters
         return chapters
 
