@@ -1512,6 +1512,7 @@ class BookshelfScreen(Screen):
         Binding("l", "load_source", "加载书源"),
         Binding("delete", "remove_selected", "移除"),
         Binding("o", "cycle_sort", "排序"),
+        Binding("u", "check_updates", "检查更新"),
     ]
 
     def __init__(self) -> None:
@@ -1529,6 +1530,7 @@ class BookshelfScreen(Screen):
                 yield Button("🧭 发现", id="btn-shelf-discover")
                 yield Button("🔐 认证", id="btn-shelf-source-ui")
                 yield Button("✅ 测试", id="btn-shelf-test-source")
+                yield Button("🔄 更新", id="btn-shelf-update")
                 yield Button("⚙ 设置", id="btn-shelf-settings")
                 yield Button("📂 书源", id="btn-shelf-load")
                 yield Button("🗑 移除", variant="error", id="btn-shelf-remove")
@@ -1551,7 +1553,7 @@ class BookshelfScreen(Screen):
 
     def on_mount(self) -> None:
         table: DataTable = self.query_one("#shelf-table", DataTable)
-        table.add_columns("#", "书名", "作者", "书源", "进度", "更新时间")
+        table.add_columns("#", "书名", "作者", "书源", "最新章节", "进度", "更新时间")
         self._update_source_label()
         self._load_entries()
 
@@ -1618,11 +1620,15 @@ class BookshelfScreen(Screen):
         for idx, entry in enumerate(self._filtered_entries, 1):
             book = entry.get("book") or {}
             source = entry.get("source") or {}
+            latest = str(book.get("latestChapterTitle") or "—")
+            if len(latest) > 20:
+                latest = latest[:20] + "…"
             table.add_row(
                 str(idx),
                 str(book.get("name") or "未命名"),
                 str(book.get("author") or "—"),
                 str(source.get("bookSourceName") or "—"),
+                latest,
                 format_progress(entry),
                 format_time_short(int(entry.get("updated_at", 0) or 0)),
                 key=str(idx - 1),
@@ -1728,6 +1734,55 @@ class BookshelfScreen(Screen):
             self.app.warn("请先加载书源。")
             return
         self.app.push_screen(SourceTestScreen(src))
+
+    @on(Button.Pressed, "#btn-shelf-update")
+    def shelf_update_pressed(self) -> None:
+        self.action_check_updates()
+
+    def action_check_updates(self) -> None:
+        """Fetch latest chapter list for all bookshelf entries and update metadata."""
+        entries = list(self._entries)
+        if not entries:
+            self.app.warn("书架为空，无法检查更新。")
+            return
+        self.app.notify(f"🔄 开始检查更新：{len(entries)} 本书…", title="检查更新")
+        self._do_check_updates(entries)
+
+    @work(thread=True)
+    def _do_check_updates(self, entries: list) -> None:
+        """Background worker: refresh TOC for each shelf book, record new chapter count."""
+        from legado_engine import get_chapter_list as _gcl
+        updated = 0
+        failed = 0
+        for entry in entries:
+            try:
+                source = self.app.reader_state.restore_source(entry)
+                book = self.app.reader_state.restore_book(entry)
+                if not source or not book:
+                    continue
+                if not book.canUpdate:
+                    continue  # respect canUpdate=False (mirrors Kotlin)
+                old_total = book.totalChapterNum or 0
+                chapters = _gcl(source, book)
+                new_total = len(chapters)
+                new_count = max(0, new_total - old_total)
+                # Persist updated book metadata (latestChapterTitle, totalChapterNum, etc.)
+                self.app.reader_state.remember_book(source, book)
+                updated += 1
+                if new_count > 0:
+                    self.app.call_from_thread(
+                        self.app.notify,
+                        f"《{book.name}》有 {new_count} 章新内容",
+                        title="✨ 有更新",
+                    )
+            except Exception:
+                failed += 1
+        self.app.call_from_thread(
+            self.app.notify,
+            f"更新完成：{updated} 本成功{f'，{failed} 本失败' if failed else ''}",
+            title="🔄 检查更新",
+        )
+        self.app.call_from_thread(self._load_entries)
 
     @on(Button.Pressed, "#btn-shelf-settings")
     def shelf_settings_pressed(self) -> None:
@@ -2396,6 +2451,14 @@ class BookInfoScreen(Screen):
         self.app.reader_state.remember_book(self._source, self._book)
         self.app.info("⭐ 已加入书架。")
 
+    def action_toggle_can_update(self) -> None:
+        """Toggle canUpdate for this book (mirrors Kotlin's setCanUpdate)."""
+        self._book.canUpdate = not self._book.canUpdate
+        self.app.reader_state.remember_book(self._source, self._book)
+        status = "✓ 已开启" if self._book.canUpdate else "✗ 已关闭"
+        self.app.info(f"自动更新：{status}")
+        self._render_info()
+
     @on(Button.Pressed, "#btn-chapters")
     def chapters_pressed(self) -> None:
         self.action_open_chapters()
@@ -2697,6 +2760,7 @@ class BookScreen(Screen):
         Binding("g",      "goto_last_read",       "继续阅读"),
         Binding("f",      "save_to_shelf",        "收藏"),
         Binding("s",      "change_source",        "换源"),
+        Binding("v",      "toggle_can_update",    "切换更新", show=False),
     ]
 
     def __init__(
@@ -2909,6 +2973,7 @@ class BookScreen(Screen):
             ("分类", b.kind, "yellow"),
             ("字数", b.wordCount, ""),
             ("最新", b.latestChapterTitle, ""),
+            ("自动更新", "✓ 开启" if b.canUpdate else "✗ 关闭", "green" if b.canUpdate else "red"),
         ]
         for label, value, style in fields:
             renderable.append(f"  {label}：", style="bold")

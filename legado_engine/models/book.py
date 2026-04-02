@@ -101,7 +101,8 @@ class Book(RuleData):
     durChapterIndex: int = 0
     durChapterTitle: str = ""
     totalChapterNum: int = 0
-    type: int = 0               # BookSourceType
+    type: int = 0               # BookType bitmask (see BookType class)
+    canUpdate: bool = True      # mirrors Book.canUpdate — false prevents auto-refresh
     readConfig: Optional[dict[str, Any]] = None
     downloadUrls: Optional[list[str]] = None
     # Extra flags
