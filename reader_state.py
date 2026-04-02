@@ -18,6 +18,9 @@ _preload_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="legado-pre
 DEFAULT_READER_SETTINGS: Dict[str, Any] = {
     "reader_style": "comfortable",
     "preload_count": 2,
+    "re_segment": False,         # re-segment poorly-formatted chapters
+    "use_replace_rules": True,   # apply user replace rules to content
+    "paragraph_indent": True,    # prepend　　to each paragraph
 }
 
 
@@ -53,6 +56,9 @@ class ReaderState:
         if not isinstance(data["bookshelf"], list):
             data["bookshelf"] = []
         data.setdefault("current_source", None)
+        data.setdefault("search_history", [])
+        if not isinstance(data["search_history"], list):
+            data["search_history"] = []
         return data
 
     def _save(self) -> None:
@@ -61,6 +67,26 @@ class ReaderState:
                 json.dumps(self._state, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+    # ------------------------------------------------------------------
+    # Search history
+    # ------------------------------------------------------------------
+
+    def add_search_history(self, query: str, max_entries: int = 50) -> None:
+        """Prepend query to history, deduplicate, cap at max_entries."""
+        query = query.strip()
+        if not query:
+            return
+        with self._lock:
+            history = self._state["search_history"]
+            # Remove existing occurrence for dedup
+            history = [q for q in history if q != query]
+            history.insert(0, query)
+            self._state["search_history"] = history[:max_entries]
+            self._save()
+
+    def get_search_history(self) -> List[str]:
+        return list(self._state.get("search_history", []))
 
     @staticmethod
     def _book_key(source: BookSource, book: Book) -> str:

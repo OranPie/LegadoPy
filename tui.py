@@ -1121,6 +1121,22 @@ class ReaderSettingsScreen(ModalScreen):
             yield Label("⏳ 预加载后续章节数", classes="settings-section")
             yield Input(value=str(preload_count), id="reader-preload-count")
 
+            # ── Content processing section ──
+            yield Label("📝 内容处理", classes="settings-section")
+            re_seg = bool(settings.get("re_segment", False))
+            use_rep = bool(settings.get("use_replace_rules", True))
+            with Horizontal():
+                yield Button(
+                    "重新分段 ✓" if re_seg else "重新分段",
+                    id="btn-re-segment",
+                    variant="primary" if re_seg else "default",
+                )
+                yield Button(
+                    "替换规则 ✓" if use_rep else "替换规则",
+                    id="btn-use-replace",
+                    variant="primary" if use_rep else "default",
+                )
+
             # ── Stats section ──
             yield Label("📊 阅读统计", classes="settings-section")
             yield Static("", id="reader-stats-info")
@@ -1172,6 +1188,25 @@ class ReaderSettingsScreen(ModalScreen):
         if button_id.startswith("reader-style-"):
             self._reader_style = button_id.removeprefix("reader-style-")
             self._refresh_style_buttons()
+            return
+
+        if button_id == "btn-re-segment":
+            # Toggle re-segment and update button label immediately
+            settings = self.app.reader_state.get_settings()
+            new_val = not bool(settings.get("re_segment", False))
+            self.app.reader_state.update_settings(re_segment=new_val)
+            btn = self.query_one("#btn-re-segment", Button)
+            btn.label = "重新分段 ✓" if new_val else "重新分段"
+            btn.variant = "primary" if new_val else "default"
+            return
+
+        if button_id == "btn-use-replace":
+            settings = self.app.reader_state.get_settings()
+            new_val = not bool(settings.get("use_replace_rules", True))
+            self.app.reader_state.update_settings(use_replace_rules=new_val)
+            btn = self.query_one("#btn-use-replace", Button)
+            btn.label = "替换规则 ✓" if new_val else "替换规则"
+            btn.variant = "primary" if new_val else "default"
             return
 
         if button_id == "btn-reader-settings-close":
@@ -1482,6 +1517,8 @@ class SearchScreen(Screen):
         Binding("/",      "focus_search", "聚焦搜索"),
         Binding("r",      "refresh_results", "刷新"),
         Binding("R",      "force_refresh",   "强制刷新", show=False),
+        Binding("p",      "toggle_precision", "精确搜索"),
+        Binding("h",      "show_history",   "搜索历史"),
         Binding("b",      "open_bookshelf", "书架"),
         Binding("t",      "open_reader_settings", "设置"),
         Binding("a",      "open_source_ui", "认证"),
@@ -1490,6 +1527,7 @@ class SearchScreen(Screen):
 
     source: reactive[Optional[BookSource]] = reactive(None)
     results: reactive[list] = reactive([])
+    _precision_search: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1512,7 +1550,7 @@ class SearchScreen(Screen):
         self.query_one("#btn-source-ui", Button).disabled = True
         self.query_one("#btn-discover", Button).disabled = True
         tbl: DataTable = self.query_one("#results-table", DataTable)
-        tbl.add_columns("#", "书名", "作者", "分类", "最新章节", "URL")
+        tbl.add_columns("#", "书名", "作者", "来源", "最新章节", "URL")
         self.source = self.app.source
         self._update_source_label()
 
@@ -1522,10 +1560,11 @@ class SearchScreen(Screen):
 
     def _update_source_label(self) -> None:
         src = self.source
+        precision_badge = " [bold yellow]精确[/bold yellow]" if self._precision_search else ""
         if src:
             self.query_one("#source-label", Label).update(
                 f"[dim]书源：[/dim][bold cyan]{src.bookSourceName}[/bold cyan]  "
-                f"[dim]{src.bookSourceUrl}[/dim]"
+                f"[dim]{src.bookSourceUrl}[/dim]{precision_badge}"
             )
         else:
             self.query_one("#source-label", Label).update(
@@ -1538,6 +1577,31 @@ class SearchScreen(Screen):
 
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()
+
+    def action_toggle_precision(self) -> None:
+        """P — toggle precision search (name/author exact match only)."""
+        self._precision_search = not self._precision_search
+        mode = "精确" if self._precision_search else "全文"
+        src_label = self.query_one("#source-label", Label)
+        self._update_source_label()
+        self.app.notify(f"搜索模式：{mode}", title="搜索设置")
+
+    def action_show_history(self) -> None:
+        """H — fill search input with last query from history."""
+        history = self.app.state.get_search_history()
+        if not history:
+            self.app.notify("暂无搜索历史", severity="warning")
+            return
+        inp = self.query_one("#search-input", Input)
+        # Cycle through history: if current input matches first entry, use second
+        current = inp.value.strip()
+        for entry in history:
+            if entry != current:
+                inp.value = entry
+                inp.focus()
+                return
+        inp.value = history[0]
+        inp.focus()
 
     def action_refresh_results(self) -> None:
         self._do_search(force_refresh=False)
@@ -1602,7 +1666,9 @@ class SearchScreen(Screen):
         )
         try:
             results = search_book(self.source, query)
-            results = _rank_search_results(results, query)
+            results = _rank_search_results(results, query, precision_search=self._precision_search)
+            # Record search history
+            self.app.state.add_search_history(query)
         except Exception as e:
             self.app.call_from_thread(self.app.error, f"搜索失败：{e}")
             results = []
@@ -1617,11 +1683,13 @@ class SearchScreen(Screen):
         tbl: DataTable = self.query_one("#results-table", DataTable)
         tbl.clear()
         for i, r in enumerate(results, 1):
+            origin_count = getattr(r, "_origin_count", 1)
+            source_info = f"×{origin_count}" if origin_count > 1 else (r.originName or r.origin or "")
             tbl.add_row(
                 str(i),
                 r.name or "",
                 r.author or "",
-                r.kind or "",
+                source_info[:25],
                 (r.latestChapterTitle or "")[:40],
                 r.bookUrl or "",
                 key=str(i - 1),
@@ -2139,7 +2207,7 @@ class ChapterListScreen(Screen):
         tbl: DataTable = self.query_one("#ch-table", DataTable)
         for ch in batch:
             row_num = tbl.row_count + 1
-            tbl.add_row(str(row_num), ch.title or "", "★" if ch.isVip else "", ch.url or "")
+            tbl.add_row(str(row_num), ch.title or "", "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "", ch.url or "")
 
     def _populate(self, chapters: List[BookChapter]) -> None:
         self.query_one("#ch-loading").display = False
@@ -2157,7 +2225,7 @@ class ChapterListScreen(Screen):
             tbl.add_row(
                 str(ch.index + 1),
                 f"{marker} {ch.title}" if marker else (ch.title or ""),
-                "★" if ch.isVip else "",
+                "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "",
                 ch.url or "",
                 key=str(ch.index),
             )
@@ -2197,7 +2265,7 @@ class ChapterListScreen(Screen):
             tbl.add_row(
                 str(ch.index + 1),
                 ch.title or "",
-                "★" if ch.isVip else "",
+                "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "",
                 ch.url or "",
                 key=str(ch.index),
             )
@@ -2443,7 +2511,7 @@ class BookScreen(Screen):
         tbl: DataTable = self.query_one("#ch-table", DataTable)
         for ch in batch:
             row_num = tbl.row_count + 1
-            tbl.add_row(str(row_num), ch.title or "", "★" if ch.isVip else "", ch.url or "")
+            tbl.add_row(str(row_num), ch.title or "", "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "", ch.url or "")
 
     def _update_ch_progress(self, done: int, total: int) -> None:
         try:
@@ -2467,7 +2535,7 @@ class BookScreen(Screen):
             tbl.add_row(
                 str(ch.index + 1),
                 f"{marker} {ch.title}" if marker else (ch.title or ""),
-                "★" if ch.isVip else "",
+                "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "",
                 ch.url or "",
                 key=str(ch.index),
             )
@@ -2506,7 +2574,7 @@ class BookScreen(Screen):
             tbl.add_row(
                 str(ch.index + 1),
                 ch.title or "",
-                "★" if ch.isVip else "",
+                "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "",
                 ch.url or "",
                 key=str(ch.index),
             )

@@ -164,9 +164,22 @@ class BookChapter(RuleData):
             return result
         return self.title
 
-    def get_file_name(self) -> str:
+    def get_file_name(self, suffix: str = "") -> str:
         import hashlib
-        return hashlib.md5(self.url.encode()).hexdigest()
+        name = hashlib.md5(self.url.encode()).hexdigest()
+        return f"{name}{suffix}" if suffix else name
+
+    def get_absolute_url(self, base_url: str = "") -> str:
+        """Resolve chapter URL against base_url (mirrors BookChapter.getAbsoluteURL())."""
+        from ..utils.network_utils import get_absolute_url as _abs
+        effective_base = self.baseUrl or base_url
+        if not effective_base:
+            return self.url
+        return _abs(effective_base, self.url) or self.url
+
+    def needs_pay(self) -> bool:
+        """True when chapter is VIP-locked and not yet purchased."""
+        return self.isVip and not self.isPay
 
 
 @dataclass

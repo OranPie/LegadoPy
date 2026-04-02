@@ -474,6 +474,10 @@ class ReaderController:
                 if chapter_index + 1 < len(self.session.chapters)
                 else None
             )
+            # Apply reader settings to the book before fetching
+            settings = self.state.get_settings()
+            self.session.book.set_re_segment(settings.get("re_segment", False))
+            self.session.book.set_use_replace_rule(settings.get("use_replace_rules", True))
             cached = get_content(self.session.source, self.session.book, chapter, next_chapter)
             self.state.set_cached_content(self.session.source, self.session.book, chapter, cached)
         self.session.current_chapter_index = chapter_index

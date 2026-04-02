@@ -127,7 +127,7 @@ def cmd_search(args):
         with spinner(f"Searching for '{args.query}' (page {args.page})…"):
             results = search_book(src, args.query, page=args.page)
 
-    results = _rank_search_results(results, args.query)
+    results = _rank_search_results(results, args.query, precision_search=getattr(args, "precision", False))
 
     if not results:
         console.print("[yellow]No results found.[/yellow]")
@@ -421,6 +421,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="SOURCE",
         help="Additional source JSON files for parallel multi-source search (may be repeated)",
+    )
+    ps.add_argument(
+        "--precision",
+        action="store_true",
+        default=False,
+        help="Precision search: only show results where name or author matches the query exactly",
     )
 
     # info

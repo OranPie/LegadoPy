@@ -290,10 +290,9 @@ class GuiPackageTests(unittest.TestCase):
 
             controller.update_settings(preload_count=5, reader_style="focus")
 
-            self.assertEqual(
-                controller.get_settings(),
-                {"reader_style": "focus", "preload_count": 5},
-            )
+            result = controller.get_settings()
+            self.assertEqual(result["reader_style"], "focus")
+            self.assertEqual(result["preload_count"], 5)
 
     def test_controller_exposes_source_auth_rows_and_saved_form(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
