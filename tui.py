@@ -1126,6 +1126,15 @@ class ReaderSettingsScreen(ModalScreen):
             yield Label("⏳ 预加载后续章节数", classes="settings-section")
             yield Input(value=str(preload_count), id="reader-preload-count")
 
+            # ── Custom width / line spacing ──
+            yield Label("↔ 自定义宽度（字符数，0=随预设）", classes="settings-section")
+            custom_width = int(settings.get("reader_width", 0) or 0)
+            custom_gap = int(settings.get("line_spacing", 0) or 0)
+            with Horizontal():
+                yield Input(value=str(custom_width), id="reader-custom-width", placeholder="0")
+                yield Label("  行间距（0=随预设，1–3）")
+                yield Input(value=str(custom_gap), id="reader-line-spacing", placeholder="0")
+
             # ── Content processing section ──
             yield Label("📝 内容处理", classes="settings-section")
             re_seg = bool(settings.get("re_segment", False))
@@ -1255,10 +1264,20 @@ class ReaderSettingsScreen(ModalScreen):
                 "[red]预加载数量必须是 0–6 的数字。[/red]"
             )
             return
+        try:
+            custom_width = max(0, int(self.query_one("#reader-custom-width", Input).value.strip() or "0"))
+        except ValueError:
+            custom_width = 0
+        try:
+            line_spacing = max(0, min(3, int(self.query_one("#reader-line-spacing", Input).value.strip() or "0")))
+        except ValueError:
+            line_spacing = 0
         self.app.reader_state.update_settings(
             reader_style=self._reader_style,
             reader_theme=self._reader_theme,
             preload_count=preload_count,
+            reader_width=custom_width,
+            line_spacing=line_spacing,
         )
         self.app.refresh_reader_views()
         self.query_one("#reader-settings-status", Label).update(
@@ -3136,8 +3155,11 @@ class ReaderScreen(Screen):
         settings = self.app.reader_state.get_settings()
         preset_name = str(settings.get("reader_style", "comfortable"))
         preset = READER_STYLE_PRESETS.get(preset_name, READER_STYLE_PRESETS["comfortable"])
-        width = preset["width"]
-        gap = preset["gap"]
+        # Allow custom width override from settings
+        custom_width = int(settings.get("reader_width", 0) or 0)
+        custom_gap = int(settings.get("line_spacing", 0) or 0)
+        width = custom_width if custom_width > 0 else preset["width"]
+        gap = custom_gap if custom_gap > 0 else preset["gap"]
         padding = " " * preset["padding"]
 
         # Build renderable
