@@ -252,14 +252,29 @@ class SourcePickerScreen(ModalScreen):
 
     def __init__(self, sources: List[BookSource], title: str = "选择书源") -> None:
         super().__init__()
-        self._all_sources = sources
-        self._filtered_sources = list(sources)
+        # Sort by customOrder ascending (mirrors Kotlin BookSourceDao ORDER BY customOrder asc)
+        self._all_sources = sorted(sources, key=lambda s: (getattr(s, "customOrder", 0) or 0, s.bookSourceName or ""))
+        self._filtered_sources = list(self._all_sources)
         self._title = title
+        # Collect unique groups (comma-separated group field, Kotlin-style)
+        seen: dict[str, None] = {}
+        for s in self._all_sources:
+            for g in (s.bookSourceGroup or "").split(","):
+                g = g.strip()
+                if g:
+                    seen[g] = None
+        self._groups: List[str] = sorted(seen.keys())
+        self._active_group: str = ""
 
     def compose(self) -> ComposeResult:
         with Container(id="source-picker-modal"):
             yield Label(f"📚 {self._title}", id="source-picker-title")
             yield Input(placeholder="🔍 输入名称、分组或网址筛选…", id="source-picker-filter")
+            if self._groups:
+                with Horizontal(id="source-picker-groups"):
+                    yield Button("全部", id="btn-grp-all", variant="primary")
+                    for g in self._groups:
+                        yield Button(g, id=f"btn-grp-{g}", variant="default")
             yield DataTable(id="source-picker-table", cursor_type="row", zebra_stripes=True)
             with Horizontal(id="source-picker-buttons"):
                 yield Button("打开", variant="primary", id="btn-source-picker-open")
@@ -275,13 +290,21 @@ class SourcePickerScreen(ModalScreen):
 
     def _apply_filter(self, query: str) -> None:
         q = query.lower().strip()
-        if not q:
-            self._filtered_sources = list(self._all_sources)
-        else:
-            self._filtered_sources = [
+        # Apply group filter first
+        if self._active_group:
+            base = [
                 s for s in self._all_sources
+                if self._active_group in [g.strip() for g in (s.bookSourceGroup or "").split(",")]
+            ]
+        else:
+            base = list(self._all_sources)
+        if q:
+            self._filtered_sources = [
+                s for s in base
                 if q in f"{s.bookSourceName} {s.bookSourceGroup or ''} {s.bookSourceUrl}".lower()
             ]
+        else:
+            self._filtered_sources = base
         table: DataTable = self.query_one("#source-picker-table", DataTable)
         table.clear()
         from reader_state import reader_state as _rs
@@ -327,6 +350,31 @@ class SourcePickerScreen(ModalScreen):
             self.app.warn("请先选择一个书源。")
             return
         self.dismiss(source)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle group filter button clicks."""
+        btn_id = event.button.id or ""
+        if btn_id == "btn-grp-all":
+            self._active_group = ""
+            self._refresh_group_buttons("")
+            self._apply_filter(self.query_one("#source-picker-filter", Input).value)
+        elif btn_id.startswith("btn-grp-"):
+            group = btn_id[len("btn-grp-"):]
+            self._active_group = group
+            self._refresh_group_buttons(group)
+            self._apply_filter(self.query_one("#source-picker-filter", Input).value)
+
+    def _refresh_group_buttons(self, active: str) -> None:
+        """Update group button variants to highlight the active group."""
+        try:
+            for btn in self.query("#source-picker-groups Button"):
+                if btn.id == "btn-grp-all":
+                    btn.variant = "primary" if not active else "default"
+                elif btn.id and btn.id.startswith("btn-grp-"):
+                    g = btn.id[len("btn-grp-"):]
+                    btn.variant = "primary" if g == active else "default"
+        except Exception:
+            pass
 
     @on(Input.Changed, "#source-picker-filter")
     def picker_filter_changed(self, event: Input.Changed) -> None:
@@ -2778,7 +2826,8 @@ class ChapterListScreen(Screen):
         tbl: DataTable = self.query_one("#ch-table", DataTable)
         for ch in batch:
             row_num = tbl.row_count + 1
-            tbl.add_row(str(row_num), ch.title or "", "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "", ch.url or "")
+            _vol_prefix = "§ " if ch.isVolume else ""
+            tbl.add_row(str(row_num), f"{_vol_prefix}{ch.title or ''}", "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "", ch.url or "")
 
     def _populate(self, chapters: List[BookChapter]) -> None:
         self.query_one("#ch-loading").display = False
@@ -2836,9 +2885,10 @@ class ChapterListScreen(Screen):
         tbl: DataTable = self.query_one("#ch-table", DataTable)
         tbl.clear()
         for ch in filtered:
+            _vol_prefix = "§ " if ch.isVolume else ""
             tbl.add_row(
                 str(ch.index + 1),
-                ch.title or "",
+                f"{_vol_prefix}{ch.title or ''}",
                 "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "",
                 ch.url or "",
                 key=str(ch.index),
@@ -3177,7 +3227,8 @@ class BookScreen(Screen):
         tbl: DataTable = self.query_one("#ch-table", DataTable)
         for ch in batch:
             row_num = tbl.row_count + 1
-            tbl.add_row(str(row_num), ch.title or "", "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "", ch.url or "")
+            _vol_prefix = "§ " if ch.isVolume else ""
+            tbl.add_row(str(row_num), f"{_vol_prefix}{ch.title or ''}", "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "", ch.url or "")
 
     def _update_ch_progress(self, done: int, total: int) -> None:
         try:
@@ -3198,9 +3249,16 @@ class BookScreen(Screen):
 
         for ch in chapters:
             marker = "→" if ch.index == last_read_index else ""
+            title = ch.title or ""
+            if ch.isVolume:
+                display_title = f"§ {title}"
+            elif marker:
+                display_title = f"{marker} {title}"
+            else:
+                display_title = title
             tbl.add_row(
                 str(ch.index + 1),
-                f"{marker} {ch.title}" if marker else (ch.title or ""),
+                display_title,
                 "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "",
                 ch.url or "",
                 key=str(ch.index),
@@ -3240,9 +3298,10 @@ class BookScreen(Screen):
         tbl: DataTable = self.query_one("#ch-table", DataTable)
         tbl.clear()
         for ch in filtered:
+            _vol_prefix = "§ " if ch.isVolume else ""
             tbl.add_row(
                 str(ch.index + 1),
-                ch.title or "",
+                f"{_vol_prefix}{ch.title or ''}",
                 "🔒" if (ch.isVip and not ch.isPay) else "★" if ch.isVip else "",
                 ch.url or "",
                 key=str(ch.index),

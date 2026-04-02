@@ -73,6 +73,11 @@ class _AnalyzeRuleP2:
         # Back-reference so pyjs_runner can bridge getString/getElement etc.
         self._java._analyze_rule = self
 
+        # Wire preUpdateJs-only callbacks
+        if pre_update_js:
+            self._java._re_get_book_fn = self._run_re_get_book
+            self._java._refresh_toc_url_fn = self._run_refresh_toc_url
+
     # ------------------------------------------------------------------
     # Setters (mirror Kotlin extension functions)
     # ------------------------------------------------------------------
@@ -255,6 +260,47 @@ class AnalyzeRule(_AnalyzeRuleP2):
             or ""
         )
         return val or ""
+
+    # ------------------------------------------------------------------
+    # preUpdateJs callbacks (mirrors AnalyzeRule.reGetBook / refreshTocUrl)
+    # ------------------------------------------------------------------
+
+    def _run_re_get_book(self) -> None:
+        """Re-search for the book and update its URL + variables (preUpdateJs only)."""
+        from ..models.book import Book
+        from ..models.book_source import BookSource
+        if not isinstance(self._rule_data, Book) or not isinstance(self._source, BookSource):
+            return
+        book: Book = self._rule_data
+        source: BookSource = self._source
+        try:
+            from ..web_book.web_book import analyze_book_info, search_book
+            results = search_book(source, book.name, engine=self._engine)
+            match = next(
+                (r for r in results
+                 if r.name == book.name and r.author == book.author),
+                results[0] if results else None,
+            )
+            if match:
+                book.bookUrl = match.bookUrl
+                if hasattr(match, "variableMap"):
+                    for k, v in (match.variableMap or {}).items():
+                        book.putVariable(k, v)
+                analyze_book_info(source, book, engine=self._engine)
+        except Exception:
+            pass
+
+    def _run_refresh_toc_url(self) -> None:
+        """Refresh tocUrl by re-fetching book info (preUpdateJs only)."""
+        from ..models.book import Book
+        from ..models.book_source import BookSource
+        if not isinstance(self._rule_data, Book) or not isinstance(self._source, BookSource):
+            return
+        try:
+            from ..web_book.web_book import analyze_book_info
+            analyze_book_info(self._source, self._rule_data, engine=self._engine)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # evalJS

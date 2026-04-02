@@ -853,6 +853,96 @@ function run(ctx) {
                 return (r != null) ? String(r) : "";
             } catch(e) { return ""; }
         },
+        getCookie: function(tag, key) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'getCookie',
+                    tag: String(tag || ""),
+                    key: (key != null) ? String(key) : null
+                });
+                return (r != null) ? String(r) : "";
+            } catch(e) { return ""; }
+        },
+        setCookie: function(tag, cookieStr) {
+            try {
+                analyzeRuleBridge({
+                    operation: 'setCookie',
+                    tag: String(tag || ""),
+                    cookie: String(cookieStr || "")
+                });
+            } catch(e) {}
+        },
+        downloadFile: function(urlOrContent, url) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'downloadFile',
+                    url: String(urlOrContent || ""),
+                    legacyUrl: (url != null) ? String(url) : null
+                });
+                return (r != null) ? String(r) : "";
+            } catch(e) { return ""; }
+        },
+        readFile: function(path) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'readFile',
+                    path: String(path || "")
+                });
+                return r;
+            } catch(e) { return null; }
+        },
+        readTxtFile: function(path, charsetName) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'readTxtFile',
+                    path: String(path || ""),
+                    charsetName: charsetName ? String(charsetName) : null
+                });
+                return (r != null) ? String(r) : "";
+            } catch(e) { return ""; }
+        },
+        deleteFile: function(path) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'deleteFile',
+                    path: String(path || "")
+                });
+                return !!r;
+            } catch(e) { return false; }
+        },
+        unzipFile: function(zipPath) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'unzipFile',
+                    path: String(zipPath || "")
+                });
+                return (r != null) ? String(r) : "";
+            } catch(e) { return ""; }
+        },
+        unArchiveFile: function(zipPath) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'unArchiveFile',
+                    path: String(zipPath || "")
+                });
+                return (r != null) ? String(r) : "";
+            } catch(e) { return ""; }
+        },
+        getTxtInFolder: function(path) {
+            try {
+                var r = analyzeRuleBridge({
+                    operation: 'getTxtInFolder',
+                    path: String(path || "")
+                });
+                return (r != null) ? String(r) : "";
+            } catch(e) { return ""; }
+        },
+        reGetBook: function() {
+            try { analyzeRuleBridge({ operation: 'reGetBook' }); } catch(e) {}
+        },
+        refreshTocUrl: function() {
+            try { analyzeRuleBridge({ operation: 'refreshTocUrl' }); } catch(e) {}
+        },
         qread: function() { return false; }
     };
     

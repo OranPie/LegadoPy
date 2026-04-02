@@ -4,10 +4,14 @@ import base64
 import hashlib
 import html
 import json
+import os
 import re
+import shutil
+import tempfile
 import threading
 import urllib.parse
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -460,3 +464,194 @@ class JsExtensions:
             except Exception:
                 headers = {}
         return self._request_compat("POST", url, headers=headers, body=body)
+
+    # ------------------------------------------------------------------
+    # Cookie helpers (mirrors JsExtensions.getCookie / setCookie)
+    # ------------------------------------------------------------------
+
+    def getCookie(self, tag: str, key: Optional[str] = None) -> str:  # noqa: N802
+        """Return cookie for *tag*. With *key*, extract a single cookie attribute."""
+        cookie_store = getattr(self.engine, "cookie_store", None)
+        if cookie_store is None:
+            return ""
+        full = cookie_store.getCookie(str(tag)) if hasattr(cookie_store, "getCookie") else ""
+        if key is None:
+            return full or ""
+        # Extract key=value from a Cookie header string
+        for part in (full or "").split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, _, v = part.partition("=")
+                if k.strip() == key:
+                    return v.strip()
+        return ""
+
+    def setCookie(self, tag: str, cookie: str) -> None:  # noqa: N802
+        cookie_store = getattr(self.engine, "cookie_store", None)
+        if cookie_store and hasattr(cookie_store, "setCookie"):
+            cookie_store.setCookie(str(tag), str(cookie))
+
+    # ------------------------------------------------------------------
+    # File-system helpers (mirrors JsExtensions file section)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _files_cache_dir() -> Path:
+        """Return (and create) the base cache directory for downloaded files."""
+        d = Path.home() / ".legadopy" / "cache" / "files"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _safe_path(self, relative: str) -> Path:
+        """Resolve *relative* against the files cache dir with path-traversal guard."""
+        base = self._files_cache_dir()
+        # Strip leading separator so Path joining works correctly
+        rel = relative.lstrip("/\\")
+        full = (base / rel).resolve()
+        if not str(full).startswith(str(base.resolve())):
+            raise SecurityError(f"Path traversal blocked: {relative!r}")
+        return full
+
+    def getFile(self, path: str) -> Path:  # noqa: N802
+        """Return a Path for *path* relative to the files cache directory."""
+        return self._safe_path(str(path))
+
+    def readFile(self, path: str) -> Optional[bytes]:  # noqa: N802
+        """Read and return bytes from a cached file, or None if not found."""
+        f = self._safe_path(str(path))
+        if f.exists() and f.is_file():
+            return f.read_bytes()
+        return None
+
+    def readTxtFile(self, path: str, charsetName: str = "") -> str:  # noqa: N802
+        """Read text from a cached file with optional charset override."""
+        f = self._safe_path(str(path))
+        if not f.exists() or not f.is_file():
+            return ""
+        raw = f.read_bytes()
+        if charsetName:
+            return raw.decode(charsetName, errors="replace")
+        # Auto-detect: try UTF-8, then GBK
+        for enc in ("utf-8-sig", "utf-8", "gbk", "latin-1"):
+            try:
+                return raw.decode(enc)
+            except (UnicodeDecodeError, LookupError):
+                pass
+        return raw.decode("latin-1")
+
+    def deleteFile(self, path: str) -> bool:  # noqa: N802
+        """Delete a file relative to the files cache directory. Returns True on success."""
+        try:
+            f = self._safe_path(str(path))
+            if f.exists():
+                if f.is_file():
+                    f.unlink()
+                elif f.is_dir():
+                    shutil.rmtree(f, ignore_errors=True)
+                return True
+            return False
+        except Exception:
+            return False
+
+    def downloadFile(self, url_or_content: str, url: Optional[str] = None) -> str:  # noqa: N802
+        """Download *url* to cache dir; return relative path.
+        Legacy two-arg form: first arg is hex content, second is url for extension."""
+        base = self._files_cache_dir()
+        if url is not None:
+            # Deprecated two-arg form: hex-encoded content + url for ext detection
+            try:
+                import binascii
+                raw = binascii.unhexlify(str(url_or_content))
+            except Exception:
+                raw = str(url_or_content).encode()
+            # Guess extension from URL
+            ext = str(url).rsplit(".", 1)[-1].split("?")[0][:8] if "." in str(url) else "bin"
+            name = f"{self.md5Encode16(str(url))}.{ext}"
+            f = base / name
+            f.write_bytes(raw)
+            return f"/{name}"
+
+        # Normal form: download from URL
+        actual_url = str(url_or_content)
+        ext = actual_url.rsplit(".", 1)[-1].split("?")[0][:8] if "." in actual_url else "bin"
+        name = f"{self.md5Encode16(actual_url)}.{ext}"
+        f = base / name
+        if f.exists():
+            return f"/{name}"
+        try:
+            r = _requests.get(actual_url, timeout=30, stream=True)
+            r.raise_for_status()
+            with open(f, "wb") as fh:
+                for chunk in r.iter_content(65536):
+                    fh.write(chunk)
+        except Exception:
+            f.unlink(missing_ok=True)
+            return ""
+        return f"/{name}"
+
+    def unzipFile(self, zipPath: str) -> str:  # noqa: N802
+        return self.unArchiveFile(zipPath)
+
+    def un7zFile(self, zipPath: str) -> str:  # noqa: N802
+        return self.unArchiveFile(zipPath)
+
+    def unrarFile(self, zipPath: str) -> str:  # noqa: N802
+        return self.unArchiveFile(zipPath)
+
+    def unArchiveFile(self, zipPath: str) -> str:  # noqa: N802
+        """Extract an archive at *zipPath* (relative). Returns relative folder path."""
+        if not zipPath:
+            return ""
+        try:
+            src = self._safe_path(str(zipPath))
+            if not src.exists():
+                return ""
+            folder_name = self.md5Encode16(src.name)
+            out_dir = self._files_cache_dir() / folder_name
+            out_dir.mkdir(parents=True, exist_ok=True)
+            # Try zipfile first; for rar/7z fall back to shutil.unpack_archive
+            try:
+                with zipfile.ZipFile(src) as zf:
+                    zf.extractall(out_dir)
+            except zipfile.BadZipFile:
+                try:
+                    shutil.unpack_archive(str(src), str(out_dir))
+                except Exception:
+                    return ""
+            return f"/{folder_name}"
+        except Exception:
+            return ""
+
+    def getTxtInFolder(self, path: str) -> str:  # noqa: N802
+        """Read and concatenate all text files in a cache folder."""
+        if not path:
+            return ""
+        try:
+            folder = self._safe_path(str(path))
+            if not folder.is_dir():
+                return ""
+            parts: list[str] = []
+            for f in sorted(folder.iterdir()):
+                if f.is_file():
+                    parts.append(self.readTxtFile(str(f.relative_to(self._files_cache_dir()))))
+            # Clean up folder after reading
+            shutil.rmtree(folder, ignore_errors=True)
+            return "\n".join(parts)
+        except Exception:
+            return ""
+
+    # ------------------------------------------------------------------
+    # preUpdateJs-only callbacks (set by AnalyzeRule when pre_update_js=True)
+    # ------------------------------------------------------------------
+
+    def reGetBook(self) -> None:  # noqa: N802
+        """Re-fetch book info + URL via precise search (only valid in preUpdateJs)."""
+        fn = getattr(self, "_re_get_book_fn", None)
+        if callable(fn):
+            fn()
+
+    def refreshTocUrl(self) -> None:  # noqa: N802
+        """Refresh tocUrl by re-fetching book info (only valid in preUpdateJs)."""
+        fn = getattr(self, "_refresh_toc_url_fn", None)
+        if callable(fn):
+            fn()

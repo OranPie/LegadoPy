@@ -137,6 +137,53 @@ def main() -> int:
                     result = entry_bytes.decode("gbk", errors="replace")
         except Exception as e:
             result = ""
+    elif operation == "getCookie":
+        java = getattr(rule, "_java", None)
+        tag = payload.get("tag") or ""
+        key = payload.get("key")
+        result = java.getCookie(tag, key) if java else ""
+    elif operation == "setCookie":
+        java = getattr(rule, "_java", None)
+        if java:
+            java.setCookie(payload.get("tag") or "", payload.get("cookie") or "")
+        result = None
+    elif operation == "downloadFile":
+        java = getattr(rule, "_java", None)
+        if java:
+            url_val = payload.get("url") or ""
+            legacy = payload.get("legacyUrl")
+            if legacy is not None:
+                result = java.downloadFile(url_val, legacy)
+            else:
+                result = java.downloadFile(url_val)
+        else:
+            result = ""
+    elif operation == "readFile":
+        java = getattr(rule, "_java", None)
+        result = java.readFile(payload.get("path") or "") if java else None
+    elif operation == "readTxtFile":
+        java = getattr(rule, "_java", None)
+        charset = payload.get("charsetName") or ""
+        result = java.readTxtFile(payload.get("path") or "", charset) if java else ""
+    elif operation == "deleteFile":
+        java = getattr(rule, "_java", None)
+        result = java.deleteFile(payload.get("path") or "") if java else False
+    elif operation in ("unzipFile", "unArchiveFile"):
+        java = getattr(rule, "_java", None)
+        result = java.unArchiveFile(payload.get("path") or "") if java else ""
+    elif operation == "getTxtInFolder":
+        java = getattr(rule, "_java", None)
+        result = java.getTxtInFolder(payload.get("path") or "") if java else ""
+    elif operation == "reGetBook":
+        java = getattr(rule, "_java", None)
+        if java:
+            java.reGetBook()
+        result = None
+    elif operation == "refreshTocUrl":
+        java = getattr(rule, "_java", None)
+        if java:
+            java.refreshTocUrl()
+        result = None
     else:
         raise ValueError(f"Unsupported operation: {operation}")
 
