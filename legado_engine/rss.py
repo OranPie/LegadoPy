@@ -31,6 +31,37 @@ def get_rss_articles(
     *,
     engine=None,
 ) -> List[RssArticle]:
+    """
+    Fetch RSS articles for the given source page.
+
+    Returns list of RssArticle objects.
+    To also get the next-page URL, use get_rss_articles_with_next().
+    """
+    articles, _ = _get_rss_articles_impl(source, page=page, url=url, engine=engine)
+    return articles
+
+
+def get_rss_articles_with_next(
+    source: RssSource,
+    page: int = 1,
+    url: Optional[str] = None,
+    *,
+    engine=None,
+) -> Tuple[List[RssArticle], Optional[str]]:
+    """
+    Like get_rss_articles() but also returns the next-page URL extracted via ruleNextPage.
+    Returns (articles, next_page_url) — next_page_url is None if not available.
+    """
+    return _get_rss_articles_impl(source, page=page, url=url, engine=engine)
+
+
+def _get_rss_articles_impl(
+    source: RssSource,
+    page: int = 1,
+    url: Optional[str] = None,
+    *,
+    engine=None,
+) -> Tuple[List[RssArticle], Optional[str]]:
     engine = resolve_engine(engine)
     _ensure_headless_supported(source)
     rule_data = RuleData()
@@ -40,11 +71,20 @@ def get_rss_articles(
     res = analyze_url.get_str_response()
     res = run_login_check(analyze_url, source, res)
     if not res.body:
-        return []
+        return [], None
     analyze_rule = AnalyzeRule(rule_data, source, engine=engine)
     analyze_rule.set_content(res.body).set_base_url(res.url)
     analyze_rule.set_redirect_url(res.url)
-    return _parse_article_page(source, analyze_rule, res.url, engine)
+    articles = _parse_article_page(source, analyze_rule, res.url, engine)
+    # ruleNextPage: extract URL of next page (mirrors RssModel.kt nextPage handling)
+    next_page_url: Optional[str] = None
+    if source.ruleNextPage:
+        try:
+            analyze_rule.set_content(res.body).set_base_url(res.url)
+            next_page_url = analyze_rule.get_string(source.ruleNextPage, is_url=True) or None
+        except Exception:
+            next_page_url = None
+    return articles, next_page_url
 
 
 def _parse_article_page(
@@ -61,6 +101,7 @@ def _parse_article_page(
         analyze_rule.set_content(item).set_base_url(base_url)
         article = RssArticle(sourceUrl=source.sourceUrl, sourceName=source.sourceName, baseUrl=base_url)
         analyze_rule.set_rule_data(article)
+        analyze_rule.set_rss_article(article)  # bind rssArticle variable for JS rules
         article.title = engine.apply_title(
             analyze_rule.get_string(source.ruleTitle) or "",
             source=source,
@@ -111,6 +152,7 @@ def get_rss_article_content(
     analyze_rule = AnalyzeRule(article, source, engine=engine)
     analyze_rule.set_content(res.body).set_base_url(res.url)
     analyze_rule.set_redirect_url(res.url)
+    analyze_rule.set_rss_article(article)  # bind rssArticle for JS rules
     if source.ruleTitle:
         title = analyze_rule.get_string(source.ruleTitle) or article.title
         article.title = engine.apply_title(title, source=source, article=article)

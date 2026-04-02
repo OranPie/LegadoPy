@@ -1513,6 +1513,7 @@ class BookshelfScreen(Screen):
         Binding("delete", "remove_selected", "移除"),
         Binding("o", "cycle_sort", "排序"),
         Binding("u", "check_updates", "检查更新"),
+        Binding("y", "open_history", "阅读历史"),
     ]
 
     def __init__(self) -> None:
@@ -1675,6 +1676,10 @@ class BookshelfScreen(Screen):
     def action_load_source(self) -> None:
         self.app.open_source_loader()
 
+    def action_open_history(self) -> None:
+        """Y — open reading history screen."""
+        self.app.open_reading_history()
+
     def action_cycle_sort(self) -> None:
         keys = [k for k, _ in SHELF_SORT_MODES]
         current_idx = keys.index(self._sort_mode) if self._sort_mode in keys else 0
@@ -1810,6 +1815,123 @@ class BookshelfScreen(Screen):
         if 0 <= idx < len(self._filtered_entries):
             self._resume_entry(self._filtered_entries[idx])
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# READING HISTORY SCREEN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ReadingHistoryScreen(Screen):
+    """Shows recently read books sorted by last-read time, with progress."""
+
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "返回"),
+        Binding("delete", "clear_history",  "清除所有"),
+        Binding("enter",  "resume_selected","继续阅读"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._entries: List[Dict[str, Any]] = []
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical():
+            yield Label("[bold]📖 阅读历史[/bold]  [dim]按最近阅读时间排序[/dim]", id="history-title")
+            yield DataTable(id="history-table", cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table: DataTable = self.query_one("#history-table", DataTable)
+        table.add_columns("#", "书名", "作者", "最后阅读章节", "进度", "阅读时间")
+        self._load_history()
+
+    def on_show(self) -> None:
+        if self.is_mounted:
+            self._load_history()
+
+    def _load_history(self) -> None:
+        import time as _time_mod
+        all_entries = self.app.reader_state.list_bookshelf()
+        # Filter to entries with reading progress and sort by updated_at desc
+        with_progress = [e for e in all_entries if e.get("progress")]
+        self._entries = sorted(
+            with_progress,
+            key=lambda e: e.get("progress", {}).get("updated_at", e.get("updated_at", 0)),
+            reverse=True,
+        )
+        table: DataTable = self.query_one("#history-table", DataTable)
+        table.clear()
+        now = int(_time_mod.time())
+        for i, entry in enumerate(self._entries, 1):
+            book_data = entry.get("book") or {}
+            prog = entry.get("progress") or {}
+            name = book_data.get("name") or "未知"
+            author = book_data.get("author") or ""
+            chapter_title = prog.get("chapter_title") or ""
+            scroll_ratio = prog.get("scroll_ratio") or 0.0
+            total = prog.get("chapter_total") or 0
+            ch_idx = prog.get("chapter_index") or 0
+            if total > 0:
+                progress_str = f"{ch_idx + 1}/{total} ({int(scroll_ratio * 100)}%)"
+            elif ch_idx:
+                progress_str = f"第{ch_idx + 1}章 ({int(scroll_ratio * 100)}%)"
+            else:
+                progress_str = f"{int(scroll_ratio * 100)}%"
+            read_at = prog.get("updated_at") or entry.get("updated_at") or 0
+            diff = now - read_at
+            if diff < 3600:
+                time_str = f"{diff // 60}分钟前"
+            elif diff < 86400:
+                time_str = f"{diff // 3600}小时前"
+            elif diff < 86400 * 30:
+                time_str = f"{diff // 86400}天前"
+            else:
+                import datetime
+                time_str = datetime.datetime.fromtimestamp(read_at).strftime("%Y-%m-%d")
+            table.add_row(
+                str(i),
+                name[:25],
+                author[:15],
+                chapter_title[:30],
+                progress_str,
+                time_str,
+                key=str(i - 1),
+            )
+        if not self._entries:
+            self.app.notify("暂无阅读历史", severity="information")
+
+    @on(DataTable.RowSelected, "#history-table")
+    def history_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.action_resume_selected()
+
+    def action_resume_selected(self) -> None:
+        table: DataTable = self.query_one("#history-table", DataTable)
+        if table.cursor_row < 0 or table.cursor_row >= len(self._entries):
+            return
+        entry = self._entries[table.cursor_row]
+        self.app.pop_screen()
+        self.app._resume_from_entry(entry)
+
+    def action_clear_history(self) -> None:
+        """Delete all reading history (clears progress from all bookshelf entries)."""
+        def _confirm(yes: bool) -> None:
+            if yes:
+                state = self.app.reader_state
+                for entry in state.list_bookshelf():
+                    key = entry.get("key")
+                    if key and entry.get("progress"):
+                        with state._lock:
+                            for e in state._state["bookshelf"]:
+                                if e.get("key") == key:
+                                    e["progress"] = {}
+                state._save()
+                self._load_history()
+                self.app.notify("已清除阅读历史", severity="information")
+
+        self.app.push_screen(
+            AlertDialogScreen("确认清除所有阅读历史记录？", confirm_label="清除", cancel_label="取消"),
+            _confirm,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1948,7 +2070,7 @@ class SearchScreen(Screen):
 
     def action_show_history(self) -> None:
         """H — show search history picker; fills input on select."""
-        history = self.app.state.get_search_history()
+        history = self.app.reader_state.get_search_history()
         if not history:
             self.app.notify("暂无搜索历史", severity="warning")
             return
@@ -2062,7 +2184,7 @@ class SearchScreen(Screen):
             results = _rank_search_results(results, query, precision_search=self._precision_search)
             # Record search history only on first page
             if page == 1:
-                self.app.state.add_search_history(query)
+                self.app.reader_state.add_search_history(query)
         except Exception as e:
             self.app.call_from_thread(self.app.error, f"搜索失败：{e}")
             results = []
@@ -2083,7 +2205,7 @@ class SearchScreen(Screen):
             from legado_engine import search_books_parallel
             all_results = search_books_parallel(sources, query)
             all_results = _rank_search_results(all_results, query, precision_search=self._precision_search)
-            self.app.state.add_search_history(query)
+            self.app.reader_state.add_search_history(query)
         except ImportError:
             # Fallback: sequential search across sources
             for src in sources:
@@ -4358,6 +4480,27 @@ class LegadoApp(App):
     def open_bookshelf(self) -> None:
         while len(self.screen_stack) > 1:
             self.pop_screen()
+
+    def open_reading_history(self) -> None:
+        """Open reading history screen (recently read books sorted by last-read time)."""
+        self.push_screen(ReadingHistoryScreen())
+
+    def _resume_from_entry(self, entry: Dict[str, Any]) -> None:
+        """Resume reading a bookshelf entry — used by ReadingHistoryScreen."""
+        try:
+            source = self.reader_state.restore_source(entry)
+            book = self.reader_state.restore_book(entry)
+            self.set_source(source)
+            self.push_screen(
+                BookScreen(
+                    book=book,
+                    source=source,
+                    resume_progress=entry.get("progress") or None,
+                    auto_open=bool(entry.get("progress")),
+                )
+            )
+        except Exception as e:
+            self.error(f"无法恢复阅读状态：{e}")
 
     def open_search(self) -> None:
         if isinstance(self.screen, SearchScreen):

@@ -82,7 +82,7 @@ from .image import (
 )
 
 # ── RSS & Reviews ─────────────────────────────────────────────────────────────
-from .rss import load_rss_sources, get_rss_articles, get_rss_article_content
+from .rss import load_rss_sources, get_rss_articles, get_rss_articles_with_next, get_rss_article_content
 from .review import get_reviews
 
 # ── Debug ─────────────────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ __all__ = [
     "decode_image_bytes", "fetch_image_bytes", "fetch_book_cover_bytes",
     "fetch_content_image_bytes", "fetch_rss_image_bytes",
     # RSS & Reviews
-    "load_rss_sources", "get_rss_articles", "get_rss_article_content", "get_reviews",
+    "load_rss_sources", "get_rss_articles", "get_rss_articles_with_next", "get_rss_article_content", "get_reviews",
     # Debug
     "configure_trace_logging", "trace_enabled", "trace_event", "trace_exception",
     # Exceptions
