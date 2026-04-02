@@ -384,6 +384,7 @@ def get_content(
 ) -> str:
     """
     Fetch and return the text content for a single chapter.
+    Mirrors WebBook.kt content(), including volume-chapter shortcut.
     """
     engine = resolve_engine(engine)
     next_chapter_url = next_chapter.url if next_chapter else None
@@ -395,9 +396,14 @@ def get_content(
         next_chapter=snapshot_chapter(next_chapter) if next_chapter else None,
     )
 
+    # Volume chapters are TOC-only dividers – return their tag or title directly
+    if chapter.isVolume and chapter.url.startswith(chapter.title or ""):
+        return chapter.tag or ""
+
     if chapter.url in (book.bookUrl, book.tocUrl, ""):
         raise ValueError(f"Chapter URL looks invalid: {chapter.url!r}")
     try:
+        content_rule = book_source.get_content_rule()
         analyze_url = AnalyzeUrl(
             m_url=chapter.url,
             source=book_source,
@@ -405,7 +411,16 @@ def get_content(
             chapter=chapter,
             engine=engine,
         )
-        res = analyze_url.get_str_response()
+        # Pass webJs/sourceRegex if set; they'll raise UnsupportedHeadlessOperation
+        # if the source strictly requires a WebView. Catch and retry without them.
+        try:
+            res = analyze_url.get_str_response(
+                js_str=content_rule.webJs or None,
+                source_regex=content_rule.sourceRegex or None,
+            )
+        except Exception:
+            # Fall back to plain HTTP fetch when WebView features are unavailable
+            res = analyze_url.get_str_response()
         res = run_login_check(analyze_url, book_source, res)
         body = res.body
         base_url = res.url
@@ -480,6 +495,48 @@ def search_books_parallel(
             seen.add(sb.bookUrl)
             deduped.append(sb)
     return deduped
+
+
+def precise_search(
+    sources: List[BookSource],
+    name: str,
+    author: str,
+    engine=None,
+) -> Optional[tuple]:
+    """
+    Mirrors WebBook.preciseSearch(): iterate sources until an exact
+    name+author match is found.
+
+    Returns the first (SearchBook, BookSource) pair where the result's
+    name and author exactly match (case-insensitive), or None if not found.
+    """
+    engine = resolve_engine(engine)
+    name_l = name.strip().lower()
+    author_l = author.strip().lower()
+
+    def _try_source(source: BookSource):
+        try:
+            results = search_book(source, name, engine=engine)
+            for sb in results:
+                if (sb.name or "").strip().lower() == name_l and (sb.author or "").strip().lower() == author_l:
+                    return (sb, source)
+        except Exception:
+            pass
+        return None
+
+    futures = {engine.executor.submit(_try_source, src): src for src in sources}
+    for fut in as_completed(futures):
+        try:
+            result = fut.result()
+            if result is not None:
+                # Cancel remaining once we have a match
+                for f in futures:
+                    f.cancel()
+                return result
+        except Exception:
+            pass
+    return None
+
 
 
 # ─── Login ───────────────────────────────────────────────────────────────────

@@ -38,6 +38,7 @@ from .analyze.analyze_url import AnalyzeUrl, StrResponse, JsCookie
 from .web_book import (
     search_book,
     search_books_parallel,
+    precise_search,
     explore_book,
     get_book_info,
     get_chapter_list,
@@ -99,7 +100,7 @@ __all__ = [
     # Analysis
     "Mode", "SourceRule", "AnalyzeRule", "AnalyzeUrl", "StrResponse", "JsCookie",
     # Web API
-    "search_book", "search_books_parallel", "explore_book",
+    "search_book", "search_books_parallel", "precise_search", "explore_book",
     "get_book_info", "get_chapter_list", "get_content",
     # Auth & Login
     "UiRow", "LoginRow", "SourceUiActionResult",
