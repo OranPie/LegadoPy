@@ -62,6 +62,7 @@ from legado_engine import (
     BookSource, Book, BookChapter,
     ExploreKind, search_book, get_book_info, get_chapter_list, get_content,
     VipContentError,
+    precise_search,
     explore_book, get_explore_kinds,
     SourceUiActionResult, parse_source_ui, get_source_form_data,
     submit_source_form_detailed, execute_source_ui_action,
@@ -276,9 +277,10 @@ class SourcePickerScreen(ModalScreen):
         table: DataTable = self.query_one("#source-picker-table", DataTable)
         table.clear()
         for idx, source in enumerate(self._filtered_sources, 1):
+            enabled_mark = "●" if getattr(source, "enabled", True) else "○"
             table.add_row(
                 str(idx),
-                source.bookSourceName or "",
+                f"{enabled_mark} {source.bookSourceName or ''}",
                 source.bookSourceGroup or "—",
                 "✓" if source.searchUrl else "✗",
                 "✓" if source.exploreUrl else "✗",
@@ -376,6 +378,8 @@ class SourceLoaderScreen(ModalScreen):
         if not sources:
             self.query_one("#loader-error", Label).update("[red]未发现有效书源数据。[/red]")
             return
+        # Store all sources in the app for change-source feature
+        self.app.all_sources = sources
         if len(sources) == 1:
             self.dismiss(sources[0])
             return
@@ -2404,6 +2408,7 @@ class BookScreen(Screen):
         Binding("j",      "jump_to_chapter",      "跳转"),
         Binding("g",      "goto_last_read",       "继续阅读"),
         Binding("f",      "save_to_shelf",        "收藏"),
+        Binding("s",      "change_source",        "换源"),
     ]
 
     def __init__(
@@ -2435,6 +2440,7 @@ class BookScreen(Screen):
                 with Horizontal(id="info-actions"):
                     yield Button("⭐ 收藏", id="btn-save-shelf")
                     yield Button("继续阅读", variant="primary", id="btn-resume")
+                    yield Button("🔄 换源", id="btn-change-source")
                     yield Button("← 返回", id="btn-back")
             # Right column: chapter list
             with Vertical(id="book-chapter-col"):
@@ -2478,6 +2484,78 @@ class BookScreen(Screen):
     def action_save_to_shelf(self) -> None:
         self.app.reader_state.remember_book(self._source, self._book)
         self.app.info("⭐ 已加入书架。")
+
+    def action_change_source(self) -> None:
+        """S — search all loaded sources for the same book and switch if found."""
+        all_sources = [s for s in self.app.all_sources if getattr(s, "searchUrl", None)]
+        if not all_sources:
+            self.app.warn("未加载多个书源，请先通过 [加载书源] 加载书源文件。")
+            return
+        self.app.info(f"🔄 正在搜索 {len(all_sources)} 个书源…")
+        self._do_change_source(all_sources)
+
+    @work(thread=True)
+    def _do_change_source(self, all_sources: list) -> None:
+        """Background: find matching sources in parallel, then show picker."""
+        book_name = self._book.name or ""
+        book_author = self._book.author or ""
+        if not book_name:
+            self.app.call_from_thread(self.app.warn, "书籍无名称，无法换源。")
+            return
+        try:
+            matches: list = []
+            for src in all_sources:
+                if not getattr(src, "searchUrl", None):
+                    continue
+                try:
+                    results = search_book(src, book_name)
+                    for r in results:
+                        if (
+                            (r.name or "").strip() == book_name
+                            and (not book_author or (r.author or "").strip() == book_author)
+                        ):
+                            matches.append((r, src))
+                            break
+                except Exception:
+                    continue
+        except Exception as e:
+            self.app.call_from_thread(self.app.error, f"换源搜索失败：{e}")
+            return
+        if not matches:
+            self.app.call_from_thread(self.app.warn, "未找到匹配书源。")
+            return
+        self.app.call_from_thread(self._show_source_picker, matches)
+
+    def _show_source_picker(self, matches: list) -> None:
+        source_list = [src for (_, src) in matches]
+        match_map = {src.bookSourceUrl: sb for (sb, src) in matches}
+
+        def _on_picked(selected: Optional[BookSource]) -> None:
+            if selected is None:
+                return
+            sb = match_map.get(selected.bookSourceUrl)
+            if sb is None:
+                return
+            new_book = sb.to_book()
+            self._source = selected
+            self._book = new_book
+            self._chapters = []
+            self._resume_progress = self.app.reader_state.get_progress(selected, new_book) or {}
+            self.app.reader_state.remember_book(selected, new_book)
+            self.app.info(f"✅ 已切换到：{selected.bookSourceName}")
+            self.sub_title = new_book.name or "书籍详情"
+            self._book.tocUrl = ""
+            self._book.infoHtml = None
+            self._book.tocHtml = None
+            self.query_one("#info-loading").display = True
+            self.query_one("#ch-loading").display = True
+            self._load_info()
+            self._load_chapters()
+
+        self.app.push_screen(
+            SourcePickerScreen(source_list, title="选择书源（换源）"),
+            _on_picked,
+        )
 
     def action_jump_to_chapter(self) -> None:
         self.app.push_screen(
@@ -2683,6 +2761,10 @@ class BookScreen(Screen):
     @on(Button.Pressed, "#btn-save-shelf")
     def save_shelf_pressed(self) -> None:
         self.action_save_to_shelf()
+
+    @on(Button.Pressed, "#btn-change-source")
+    def change_source_pressed(self) -> None:
+        self.action_change_source()
 
     @on(Button.Pressed, "#btn-back")
     def back_pressed(self) -> None:
@@ -3760,6 +3842,7 @@ class LegadoApp(App):
         super().__init__()
         self.reader_state = ReaderState()
         self.source: Optional[BookSource] = source or self.reader_state.get_current_source()
+        self.all_sources: List[BookSource] = []  # all loaded sources in current session
 
     def info(self, message: str) -> None:
         self.notify(message, severity="information")
