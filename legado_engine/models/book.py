@@ -92,6 +92,7 @@ class Book(RuleData):
     # Extra flags
     _reverse_toc: bool = False
     _use_replace_rule: bool = True
+    _re_segment: bool = False
 
     def get_reverse_toc(self) -> bool:
         return self._reverse_toc
@@ -101,6 +102,14 @@ class Book(RuleData):
 
     def set_use_replace_rule(self, value: bool) -> None:
         self._use_replace_rule = bool(value)
+
+    def get_re_segment(self) -> bool:
+        if self.readConfig and "reSegment" in self.readConfig:
+            return bool(self.readConfig["reSegment"])
+        return self._re_segment
+
+    def set_re_segment(self, value: bool) -> None:
+        self._re_segment = bool(value)
 
     def to_search_book(self) -> "SearchBook":
         result = SearchBook(

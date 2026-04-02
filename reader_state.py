@@ -29,6 +29,10 @@ class ReaderState:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir = self.base_dir / "chapter_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.toc_cache_dir = self.base_dir / "toc_cache"
+        self.toc_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.book_info_dir = self.base_dir / "book_info"
+        self.book_info_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.base_dir / "reader_state.json"
         self._lock = threading.RLock()
         self._active_preloads: set[str] = set()
@@ -262,6 +266,91 @@ class ReaderState:
     ) -> None:
         """Delete the on-disk cache entry for a single chapter."""
         path = self.cache_dir / f"{self.chapter_cache_key(source, book, chapter)}.txt"
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Persistent TOC (chapter list) cache
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _toc_cache_key(source: "BookSource", book: "Book") -> str:
+        raw = f"{source.bookSourceUrl}\n{book.bookUrl}"
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    def get_cached_toc(
+        self,
+        source: "BookSource",
+        book: "Book",
+    ) -> Optional[List["BookChapter"]]:
+        path = self.toc_cache_dir / f"{self._toc_cache_key(source, book)}.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return [self._deserialize_chapter(ch) for ch in data]
+        except Exception:
+            return None
+
+    def set_cached_toc(
+        self,
+        source: "BookSource",
+        book: "Book",
+        chapters: List["BookChapter"],
+    ) -> None:
+        path = self.toc_cache_dir / f"{self._toc_cache_key(source, book)}.json"
+        try:
+            path.write_text(
+                json.dumps([self._serialize_chapter(ch) for ch in chapters], ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def invalidate_cached_toc(self, source: "BookSource", book: "Book") -> None:
+        path = self.toc_cache_dir / f"{self._toc_cache_key(source, book)}.json"
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Persistent book-info cache
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _book_info_key(source: "BookSource", book: "Book") -> str:
+        raw = f"{source.bookSourceUrl}\n{book.bookUrl}"
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    def get_cached_book_info(
+        self,
+        source: "BookSource",
+        book: "Book",
+    ) -> Optional["Book"]:
+        path = self.book_info_dir / f"{self._book_info_key(source, book)}.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return self._deserialize_book(data)
+        except Exception:
+            return None
+
+    def set_cached_book_info(self, source: "BookSource", book: "Book") -> None:
+        path = self.book_info_dir / f"{self._book_info_key(source, book)}.json"
+        try:
+            path.write_text(
+                json.dumps(self._serialize_book(book), ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def invalidate_cached_book_info(self, source: "BookSource", book: "Book") -> None:
+        path = self.book_info_dir / f"{self._book_info_key(source, book)}.json"
         try:
             path.unlink(missing_ok=True)
         except Exception:

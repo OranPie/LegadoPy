@@ -47,32 +47,71 @@ def load_source_file(path: str | Path) -> BookSource:
     return load_source_text(Path(path).read_text(encoding="utf-8"))
 
 
-def _rank_search_results(results: List[SearchBook], query: str) -> List[SearchBook]:
+def _rank_search_results(
+    results: List[SearchBook],
+    query: str,
+    *,
+    precision_search: bool = False,
+) -> List[SearchBook]:
     """
-    Score and rank search results by relevance to the query.
+    Rank and merge search results matching Android SearchModel.mergeItems().
 
-    Scoring (higher = better):
-      3 — exact name match (case-insensitive)
-      2 — all query words present in name
-      1 — any query word present in name or author
-      0 — no match
-    Results with equal scores preserve their original (source) order.
+    3-tier bucketing (Kotlin: equalData / containsData / otherData):
+      Tier 3 — name == query  OR  author == query  (exact)
+      Tier 2 — name contains query  OR  author contains query
+      Tier 1 — any other result  (discarded when precision_search=True)
+
+    Within each tier, results with the same (name, author) are *merged*:
+    the first entry is kept as the representative and its ``origin_count``
+    is incremented for every additional source that returned the same title.
+    Books with more origins sort higher within the same tier.
     """
     q_lower = query.strip().lower()
     words = [w for w in re.split(r'\s+', q_lower) if w]
 
-    def _score(sb: SearchBook) -> int:
+    def _tier(sb: SearchBook) -> int:
         name = (sb.name or "").lower()
         author = (sb.author or "").lower()
-        if name == q_lower:
+        if name == q_lower or author == q_lower:
             return 3
-        if words and all(w in name for w in words):
+        if q_lower in name or q_lower in author:
             return 2
-        if any(w in name or w in author for w in words):
+        if words and (any(w in name for w in words) or any(w in author for w in words)):
             return 1
         return 0
 
-    return sorted(results, key=_score, reverse=True)
+    # Assign tiers
+    tiered = [(sb, _tier(sb)) for sb in results]
+
+    if precision_search:
+        tiered = [(sb, t) for sb, t in tiered if t >= 2]
+
+    # Merge same (name, author) items, tracking origin count
+    # key → (representative SearchBook, tier, origin_count)
+    merged: dict[tuple, tuple] = {}
+    for sb, t in tiered:
+        key = ((sb.name or "").lower(), (sb.author or "").lower())
+        if key in merged:
+            rep, rep_t, cnt = merged[key]
+            # Keep the entry from the higher-tier source; accumulate count
+            if t > rep_t:
+                merged[key] = (sb, t, cnt + 1)
+            else:
+                merged[key] = (rep, rep_t, cnt + 1)
+        else:
+            merged[key] = (sb, t, 1)
+
+    # Sort: tier desc, then origin_count desc (more sources → higher rank)
+    sorted_entries = sorted(merged.values(), key=lambda x: (x[1], x[2]), reverse=True)
+
+    # Attach origin_count to the SearchBook objects for display use
+    ranked: List[SearchBook] = []
+    for rep, _t, cnt in sorted_entries:
+        if cnt > 1:
+            rep = copy.copy(rep)
+            rep._origin_count = cnt  # type: ignore[attr-defined]
+        ranked.append(rep)
+    return ranked
 
 
 @dataclass
@@ -176,13 +215,13 @@ class ReaderController:
             raise ValueError("No source file path recorded")
         return self.load_source(self.session.source_path)
 
-    def search(self, query: str, page: int = 1, *, force_refresh: bool = False) -> List[SearchBook]:
+    def search(self, query: str, page: int = 1, *, force_refresh: bool = False, precision_search: bool = False) -> List[SearchBook]:
         source = self._require_source()
         cache_key = (source.bookSourceUrl, query, page)
         results = None if force_refresh else self._search_cache.get(cache_key)
         if results is None:
             results = search_book(source, query, page=page)
-            results = _rank_search_results(results, query)
+            results = _rank_search_results(results, query, precision_search=precision_search)
             self._search_cache[cache_key] = copy.deepcopy(results)
         else:
             results = copy.deepcopy(results)
@@ -196,10 +235,15 @@ class ReaderController:
         page: int = 1,
         *,
         force_refresh: bool = False,
+        precision_search: bool = False,
         result_callback: Optional[Callable[[List[SearchBook]], None]] = None,
     ) -> List[SearchBook]:
         """
-        Search across multiple sources in parallel and return ranked results.
+        Search across multiple sources in parallel and return ranked+merged results.
+
+        Implements Android SearchModel.mergeItems() 3-tier ranking with
+        origin-count deduplication: same (name, author) across sources are merged
+        and sorted by how many sources returned them.
 
         ``result_callback`` is called incrementally as each source returns,
         allowing streaming UIs to show results before all sources finish.
@@ -240,20 +284,16 @@ class ReaderController:
                     if batch:
                         all_results.extend(batch)
                         if result_callback:
-                            result_callback(_rank_search_results(list(all_results), query))
+                            result_callback(_rank_search_results(
+                                list(all_results), query,
+                                precision_search=precision_search,
+                            ))
                 except Exception:
                     pass
 
-        ranked = _rank_search_results(all_results, query)
-        # De-duplicate by bookUrl
-        seen: set = set()
-        deduped: List[SearchBook] = []
-        for sb in ranked:
-            if sb.bookUrl not in seen:
-                seen.add(sb.bookUrl)
-                deduped.append(sb)
-        self.session.search_results = deduped
-        return deduped
+        ranked = _rank_search_results(all_results, query, precision_search=precision_search)
+        self.session.search_results = ranked
+        return ranked
 
     def load_explore_kinds(self, *, force_refresh: bool = False) -> List[ExploreKind]:
         source = self._require_source()
@@ -297,11 +337,14 @@ class ReaderController:
         source = self._require_source()
         cache_key = self._book_cache_key(source, book)
         hydrated = None if force_refresh else self._book_cache.get(cache_key)
+        if hydrated is None and not force_refresh:
+            # Try persistent disk cache before network fetch
+            hydrated = self.state.get_cached_book_info(source, book)
         if hydrated is None:
             hydrated = get_book_info(source, book, can_rename=True)
-            self._book_cache[cache_key] = copy.deepcopy(hydrated)
-        else:
-            hydrated = copy.deepcopy(hydrated)
+            self.state.set_cached_book_info(source, hydrated)
+        self._book_cache[cache_key] = copy.deepcopy(hydrated)
+        hydrated = copy.deepcopy(hydrated)
         self.session.book = hydrated
         self.session.chapters = []
         self.session.current_chapter_index = None
@@ -318,18 +361,27 @@ class ReaderController:
         if not self.session.book:
             raise ValueError("No active book")
         cache_key = self._chapter_cache_key(source, self.session.book)
+        if force_refresh:
+            self.state.invalidate_cached_toc(source, self.session.book)
         chapters = None if force_refresh else self._chapter_cache.get(cache_key)
+        if chapters is None and not force_refresh:
+            # Try persistent disk TOC cache
+            chapters = self.state.get_cached_toc(source, self.session.book)
         if chapters is None:
             chapters = get_chapter_list(
                 source, self.session.book, chapter_batch_fn=chapter_batch_fn
             )
+            self.state.set_cached_toc(source, self.session.book, chapters)
             self._chapter_cache[cache_key] = copy.deepcopy(chapters)
         else:
             # Serve from cache but still stream a single batch so callers
             # don't need to special-case the cached path.
             chapters = copy.deepcopy(chapters)
+            self._chapter_cache[cache_key] = copy.deepcopy(chapters)
             if chapter_batch_fn:
                 chapter_batch_fn(list(chapters))
+        self.session.chapters = chapters
+        return chapters
         self.session.chapters = chapters
         return chapters
 

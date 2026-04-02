@@ -77,6 +77,10 @@ class ReplaceRule:
                     text,
                     timeout=max(0.1, self.get_valid_timeout_millisecond() / 1000.0),
                 )
+            except _regex.TimeoutError:
+                # Auto-disable rules that are too slow, matching Android behavior
+                self.isEnabled = False
+                return text
             except Exception:
                 return text
         try:

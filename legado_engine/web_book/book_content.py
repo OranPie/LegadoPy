@@ -3,6 +3,8 @@ BookContent – 1:1 port of BookContent.kt.
 Handles single-page and multi-page content extraction.
 """
 from __future__ import annotations
+
+import re
 from concurrent.futures import as_completed
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -12,10 +14,14 @@ from ..analyze.analyze_url import AnalyzeUrl
 from ..pipeline import run_login_check
 from ..utils.html_formatter import format_html, format_keep_img
 from ..utils.network_utils import get_absolute_url
+from ..utils.content_help import re_segment
 
 if TYPE_CHECKING:
     from ..models.book_source import BookSource, ContentRule
     from ..models.book import Book, BookChapter
+
+# Default paragraph indent (matches ReadBookConfig.paragraphIndent in Android)
+PARAGRAPH_INDENT = "　　"
 
 
 def analyze_content(
@@ -126,9 +132,62 @@ def analyze_content(
         content = analyze_rule.get_string(content_rule.replaceRegex, normalized, unescape=False)
         content = "\n".join(f"　　{line}" if line else "" for line in content.splitlines())
     content = engine.apply_content(content, source=book_source, book=book, chapter=chapter, use_replace=book.get_use_replace_rule())
+    content = _post_process_content(content, book, chapter)
     if not chapter.isVolume and not content.strip():
         raise ValueError("Content is empty")
     return content
+
+
+def _post_process_content(content: str, book: "Book", chapter: "BookChapter") -> str:
+    """
+    Post-processing pipeline matching Android's ContentProcessor.getContent():
+
+    1. Strip duplicate chapter title from content start.
+    2. Re-segment paragraphs if book.get_re_segment().
+    3. Add paragraph indentation (　　) to each non-empty paragraph.
+    """
+    if not content or content == "null":
+        return content
+
+    # --- 1. Remove duplicate title (mirrors ContentProcessor lines 96-119) ---
+    try:
+        book_name = re.escape(book.name or "")
+        title_raw = re.escape(chapter.title or "")
+        # Allow whitespace-equivalents between title chars
+        title_pat = re.sub(r'\\ ', r'\\s*', title_raw)
+        # \p{P} (Unicode punctuation) – fall back to a broad bracket class
+        try:
+            import regex as _re_mod  # type: ignore[import]
+            pat = _re_mod.compile(
+                rf'^(\s|\p{{P}}|{book_name})*{title_pat}(\s)*',
+                _re_mod.UNICODE,
+            )
+        except Exception:
+            pat = re.compile(
+                rf'^([\s\W]|{book_name})*{title_pat}(\s)*',
+                re.UNICODE,
+            )
+        m = pat.match(content)
+        if m and m.end() > 0:
+            content = content[m.end():]
+    except Exception:
+        pass
+
+    # --- 2. Re-segment ---
+    if book.get_re_segment():
+        try:
+            content = re_segment(content, chapter.title or "")
+        except Exception:
+            pass
+
+    # --- 3. Paragraph indentation ---
+    lines = content.splitlines()
+    indented: list[str] = []
+    for line in lines:
+        paragraph = line.strip('\u0020\u3000\t\r\n')
+        if paragraph:
+            indented.append(f"{PARAGRAPH_INDENT}{paragraph}")
+    return "\n".join(indented)
 
 
 def _analyze_content_page(
