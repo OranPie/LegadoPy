@@ -268,6 +268,22 @@ class ReaderState:
                     return dict(entry)
         return None
 
+    def remove_bookshelf_entry(self, book_url: str, source_url: str) -> bool:
+        """Remove a bookshelf entry by book URL and source URL."""
+        with self._lock:
+            before = len(self._state["bookshelf"])
+            self._state["bookshelf"] = [
+                e for e in self._state["bookshelf"]
+                if not (
+                    (e.get("book") or {}).get("bookUrl") == book_url
+                    and (e.get("source") or {}).get("bookSourceUrl") == source_url
+                )
+            ]
+            removed = len(self._state["bookshelf"]) < before
+        if removed:
+            self._save()
+        return removed
+
     def remember_book(self, source: BookSource, book: Book) -> Dict[str, Any]:
         key = self._book_key(source, book)
         now = int(time.time())

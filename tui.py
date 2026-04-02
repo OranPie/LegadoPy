@@ -209,6 +209,13 @@ def format_progress_short(entry: Dict[str, Any]) -> str:
     return f"Ch.{idx}"
 
 
+def mini_bar(ratio: float, width: int = 10) -> str:
+    """Unicode block progress bar, e.g. '▓▓▓░░░░░░░' for 30%."""
+    ratio = max(0.0, min(1.0, float(ratio or 0)))
+    filled = round(ratio * width)
+    return "▓" * filled + "░" * (width - filled)
+
+
 def parse_book_sources(raw: str) -> List[BookSource]:
     """Parse one or more BookSource objects from a JSON string."""
     raw = raw.strip()
@@ -1582,6 +1589,7 @@ class BookshelfScreen(Screen):
                 yield Button("🔄 更新", id="btn-shelf-update")
                 yield Button("⚙ 设置", id="btn-shelf-settings")
                 yield Button("📂 书源", id="btn-shelf-load")
+                yield Button("📖 历史", id="btn-shelf-history")
                 yield Button("🗑 移除", variant="error", id="btn-shelf-remove")
 
             # ── Source & stats bar ──
@@ -1602,7 +1610,7 @@ class BookshelfScreen(Screen):
 
     def on_mount(self) -> None:
         table: DataTable = self.query_one("#shelf-table", DataTable)
-        table.add_columns("#", "书名", "作者", "书源", "最新章节", "进度", "更新时间")
+        table.add_columns("#", "书名", "作者", "书源", "最新章节", "进度", "阅读条", "更新时间")
         self._update_source_label()
         self._load_entries()
 
@@ -1672,6 +1680,16 @@ class BookshelfScreen(Screen):
             latest = str(book.get("latestChapterTitle") or "—")
             if len(latest) > 20:
                 latest = latest[:20] + "…"
+            progress_val = entry.get("progress") or {}
+            ch_idx = progress_val.get("chapter_index")
+            ch_total = progress_val.get("chapter_total")
+            scroll = float(progress_val.get("scroll_ratio") or 0.0)
+            if ch_idx is not None and ch_total and ch_total > 0:
+                ratio = (ch_idx + 1) / ch_total
+            elif ch_idx is not None:
+                ratio = scroll
+            else:
+                ratio = 0.0
             table.add_row(
                 str(idx),
                 str(book.get("name") or "未命名"),
@@ -1679,6 +1697,7 @@ class BookshelfScreen(Screen):
                 str(source.get("bookSourceName") or "—"),
                 latest,
                 format_progress(entry),
+                mini_bar(ratio),
                 format_time_short(int(entry.get("updated_at", 0) or 0)),
                 key=str(idx - 1),
             )
@@ -1845,6 +1864,10 @@ class BookshelfScreen(Screen):
     def shelf_load_pressed(self) -> None:
         self.action_load_source()
 
+    @on(Button.Pressed, "#btn-shelf-history")
+    def shelf_history_pressed(self) -> None:
+        self.action_open_history()
+
     @on(Button.Pressed, "#btn-shelf-remove")
     def shelf_remove_pressed(self) -> None:
         self.action_remove_selected()
@@ -1884,8 +1907,13 @@ class ReadingHistoryScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical():
-            yield Label("[bold]📖 阅读历史[/bold]  [dim]按最近阅读时间排序[/dim]", id="history-title")
+            with Horizontal(id="history-top"):
+                yield Label("[bold]📖 阅读历史[/bold]  [dim]按最近阅读时间排序[/dim]", id="history-title")
+                yield Button("▶ 继续阅读", id="btn-history-resume", variant="primary")
+                yield Button("✕ 清除记录", id="btn-history-clear-one", variant="warning")
+                yield Button("🗑 清除全部", id="btn-history-clear-all", variant="error")
             yield DataTable(id="history-table", cursor_type="row", zebra_stripes=True)
+            yield Label("", id="history-footer")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1945,8 +1973,44 @@ class ReadingHistoryScreen(Screen):
                 time_str,
                 key=str(i - 1),
             )
+        count = len(self._entries)
+        footer_lbl = self.query_one("#history-footer", Label)
+        footer_lbl.update(f"[dim]共 {count} 条阅读记录[/dim]" if count else "[dim]暂无阅读历史[/dim]")
         if not self._entries:
             self.app.notify("暂无阅读历史", severity="information")
+
+    @on(Button.Pressed, "#btn-history-resume")
+    def _history_resume_btn(self) -> None:
+        self.action_resume_selected()
+
+    @on(Button.Pressed, "#btn-history-clear-one")
+    def _history_clear_one_btn(self) -> None:
+        table: DataTable = self.query_one("#history-table", DataTable)
+        if table.cursor_row < 0 or table.cursor_row >= len(self._entries):
+            return
+        entry = self._entries[table.cursor_row]
+        key = entry.get("key")
+        book_name = (entry.get("book") or {}).get("name") or "此书"
+
+        def _confirm(yes: bool) -> None:
+            if yes and key:
+                state = self.app.reader_state
+                with state._lock:
+                    for e in state._state["bookshelf"]:
+                        if e.get("key") == key:
+                            e["progress"] = {}
+                state._save()
+                self._load_history()
+                self.app.notify(f"已清除《{book_name}》阅读记录")
+
+        self.app.push_screen(
+            AlertDialogScreen(f"清除《{book_name}》的阅读记录？", confirm_label="清除", cancel_label="取消"),
+            _confirm,
+        )
+
+    @on(Button.Pressed, "#btn-history-clear-all")
+    def _history_clear_all_btn(self) -> None:
+        self.action_clear_history()
 
     @on(DataTable.RowSelected, "#history-table")
     def history_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -2071,6 +2135,7 @@ class SearchScreen(Screen):
                 yield Button("📂", id="btn-load-source", classes="icon-btn")
             yield Label("", id="source-label")
             yield DataTable(id="results-table", cursor_type="row", zebra_stripes=True)
+            yield Label("", id="search-intro-label", classes="intro-preview")
             yield LoadingIndicator(id="search-loading")
         yield Footer()
 
@@ -2079,7 +2144,7 @@ class SearchScreen(Screen):
         self.query_one("#btn-source-ui", Button).disabled = True
         self.query_one("#btn-discover", Button).disabled = True
         tbl: DataTable = self.query_one("#results-table", DataTable)
-        tbl.add_columns("#", "书名", "作者", "来源", "最新章节", "URL")
+        tbl.add_columns("#", "书名", "作者", "分类", "字数", "来源", "最新章节")
         self.source = self.app.source
         self._update_source_label()
 
@@ -2292,13 +2357,30 @@ class SearchScreen(Screen):
                 str(i),
                 r.name or "",
                 r.author or "",
+                (getattr(r, "kind", None) or "")[:12],
+                (getattr(r, "wordCount", None) or "")[:10],
                 source_info[:30],
                 (r.latestChapterTitle or "")[:40],
-                r.bookUrl or "",
                 key=str(i - 1),
             )
         if self._search_page > 1:
             self._update_source_label()
+
+    @on(DataTable.RowHighlighted, "#results-table")
+    def row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.row_key is None:
+            return
+        try:
+            idx = int(event.row_key.value)
+        except (TypeError, ValueError):
+            return
+        if 0 <= idx < len(self.results):
+            r = self.results[idx]
+            intro = (getattr(r, "intro", None) or "").strip().replace("\n", " ")
+            if len(intro) > 120:
+                intro = intro[:120] + "…"
+            label = self.query_one("#search-intro-label", Label)
+            label.update(f"[dim]{intro}[/dim]" if intro else "")
 
     @on(DataTable.RowSelected, "#results-table")
     def row_selected(self, event: DataTable.RowSelected) -> None:
@@ -3563,18 +3645,23 @@ class ReaderScreen(Screen):
         theme = READER_THEMES.get(self._get_current_theme(), {})
         theme_icon = theme.get("icon", "")
 
+        bar = mini_bar(chapter_pct / 100, width=12)
+        chapter_title = self._chapter.title or "—"
+        if len(chapter_title) > 40:
+            chapter_title = chapter_title[:40] + "…"
+
         self.query_one("#nav-label", Label).update(
-            f"[dim]{idx + 1}/{total}[/dim]  "
-            f"[bold]{self._chapter.title or '—'}[/bold]"
+            f"[dim]第{idx + 1}/{total}章[/dim]  "
+            f"[bold]{chapter_title}[/bold]"
             f"{search_note}"
         )
         self.query_one("#btn-prev").disabled = (idx == 0)
         self.query_one("#btn-next").disabled = (idx >= total - 1)
 
-        # Progress bar label
+        # Progress bar label — show mini-bar + percentage
         self.query_one("#reader-progress-label", Label).update(
             f"[dim]{theme_icon} {self._book.name or ''} · "
-            f"第{idx + 1}章 · 全书{chapter_pct}%[/dim]"
+            f"{bar} {chapter_pct}%[/dim]"
         )
 
     def action_reload(self) -> None:
@@ -4425,6 +4512,49 @@ BookScreen #chapters-top {
     padding: 0 1;
 }
 BookScreen #info-scroll {
+    height: 1fr;
+}
+
+/* ─── Source Picker Groups ───────────────────────────────────────────── */
+#source-picker-groups {
+    height: 3;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0 1;
+}
+#source-picker-groups Button {
+    margin-right: 1;
+    min-width: 6;
+    height: 2;
+}
+
+/* ─── Search Intro Preview ───────────────────────────────────────────── */
+#search-intro-label {
+    height: 2;
+    padding: 0 2;
+    color: $text-muted;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.intro-preview {
+    border-top: dashed $panel;
+}
+
+/* ─── Reading History ────────────────────────────────────────────────── */
+#history-top {
+    height: 3;
+    padding: 0 1;
+    align: left middle;
+}
+#history-top Button {
+    margin-right: 1;
+}
+#history-footer {
+    height: 1;
+    padding: 0 2;
+    color: $text-muted;
+}
+#history-table {
     height: 1fr;
 }
 """ + _build_theme_css()
